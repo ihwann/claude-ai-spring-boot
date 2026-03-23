@@ -40,14 +40,30 @@
 ## Project General Instructions
 
 - Always use the latest versions of dependencies.
-- Always write Java code as the Spring Boot application.
+- Always write Kotlin code as the Spring Boot application.
 - Always use Maven for dependency management.
 - Always create test cases for the generated code both positive and negative.
 - Always generate the CircleCI pipeline in the .circleci directory to verify the code.
 - Minimize the amount of code generated.
 - The Maven artifact name must be the same as the parent directory name.
 - Use semantic versioning for the Maven project. Each time you generate a new version, bump the PATCH section of the version number.
-- Use `pl.piomin.services` as the group ID for the Maven project and base Java package.
-- Do not use the Lombok library.
+- Use `pl.piomin.services` as the group ID for the Maven project and base Kotlin package.
+- Do not use the Lombok library (use Kotlin data class instead).
 - Generate the Docker Compose file to run all components used by the application.
 - Update README.md each time you generate a new version.
+
+## Kotlin-Specific Instructions
+
+- Use `data class` for DTOs and value objects (replaces Java records/Lombok @Data).
+- Use `open class` for JPA entities — required for Hibernate proxies. The `all-open` Maven plugin handles `@Entity`, `@Service`, `@Component` etc. automatically.
+- Use `no-arg` Maven plugin for JPA entities — generates a zero-arg constructor for `@Entity`, `@Embeddable`, `@MappedSuperclass` automatically.
+- Always annotate validation constraints with `@field:` target (e.g. `@field:NotBlank`) on constructor parameters, otherwise validation is silently ignored.
+- **Never use `!!` (not-null assertion)**. Use safe-call `?.`, Elvis `?:`, `requireNotNull()`, or `checkNotNull()` instead.
+- Use MockK (not Mockito) for all mocking in tests. Use `@MockkBean` (SpringMockK) in `@WebMvcTest` / `@SpringBootTest`.
+- Use Kotlin DSL for Spring Security `SecurityFilterChain` configuration.
+- Prefer `suspend fun` + coroutines for async operations over reactive `Mono`/`Flux` where possible.
+- Use constructor injection (primary constructor) — no `@Autowired` needed in Kotlin.
+- Use `companion object` for factory methods and constants inside classes.
+- Prefer extension functions for utility methods that operate on a type.
+- Avoid `!!` — if you find yourself writing `!!`, redesign the null handling.
+- Source directory is `src/main/kotlin`, test directory is `src/test/kotlin`.

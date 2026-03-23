@@ -1,188 +1,135 @@
-# Reactive WebFlux
+# Async Programming: Coroutines + WebFlux (Kotlin)
 
-## WebFlux Controller
+> **Kotlin-first approach**: Prefer `suspend fun` + `Flow` over raw `Mono`/`Flux`.
+> Use coroutines for readability; bridge to Reactor only when required by Spring APIs.
 
-```java
-package com.example.presentation.rest;
+## Coroutine-based Controller (Preferred)
 
-import com.example.application.dto.UserRequest;
-import com.example.application.dto.UserResponse;
-import com.example.application.service.UserService;
-import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+```kotlin
+package pl.piomin.services.presentation.rest
+
+import kotlinx.coroutines.flow.Flow
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.*
 
 @RestController
 @RequestMapping("/api/users")
-@RequiredArgsConstructor
-public class UserController {
+class UserController(private val userService: UserService) {
 
-    private final UserService userService;
-
-    @GetMapping
-    public Flux<UserResponse> getAllUsers() {
-        return userService.findAll();
-    }
-
+    // suspend fun — non-blocking, coroutine-based
     @GetMapping("/{id}")
-    public Mono<UserResponse> getUserById(@PathVariable Long id) {
-        return userService.findById(id);
-    }
+    suspend fun getUserById(@PathVariable id: Long): ResponseEntity<UserResponse> =
+        userService.findById(id)
+            ?.let { ResponseEntity.ok(it) }
+            ?: ResponseEntity.notFound().build()
+
+    // Flow — streaming response
+    @GetMapping
+    fun getAllUsers(): Flow<UserResponse> = userService.findAll()
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<UserResponse> createUser(@RequestBody @Valid UserRequest request) {
-        return userService.create(request);
-    }
+    suspend fun createUser(@RequestBody @Valid request: UserRequest): UserResponse =
+        userService.create(request)
 
     @PutMapping("/{id}")
-    public Mono<UserResponse> updateUser(
-        @PathVariable Long id,
-        @RequestBody @Valid UserRequest request
-    ) {
-        return userService.update(id, request);
-    }
+    suspend fun updateUser(
+        @PathVariable id: Long,
+        @RequestBody @Valid request: UserRequest
+    ): UserResponse = userService.update(id, request)
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> deleteUser(@PathVariable Long id) {
-        return userService.delete(id);
-    }
+    suspend fun deleteUser(@PathVariable id: Long) = userService.delete(id)
 }
 ```
 
-## Reactive Service Layer
+## Coroutine Service Layer
 
-```java
-package com.example.application.service;
+```kotlin
+package pl.piomin.services.application.service
 
-import com.example.application.dto.UserRequest;
-import com.example.application.dto.UserResponse;
-import com.example.application.mapper.UserMapper;
-import com.example.domain.model.User;
-import com.example.domain.repository.UserRepository;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
+import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
 
 @Service
-@RequiredArgsConstructor
-public class UserService {
+class UserService(private val userRepository: UserRepository) {
 
-    private final UserRepository userRepository;
-    private final UserMapper userMapper;
-
-    public Flux<UserResponse> findAll() {
-        return userRepository.findAll()
-            .map(userMapper::toResponse);
+    // Use Dispatchers.IO for JPA/JDBC blocking calls inside suspend functions
+    @Transactional(readOnly = true)
+    suspend fun findById(id: Long): UserResponse? = withContext(Dispatchers.IO) {
+        userRepository.findById(id).map { UserResponse.from(it) }.orElse(null)
     }
 
-    public Mono<UserResponse> findById(Long id) {
-        return userRepository.findById(id)
-            .map(userMapper::toResponse)
-            .switchIfEmpty(Mono.error(
-                new EntityNotFoundException("User not found: " + id)
-            ));
+    fun findAll(): Flow<UserResponse> =
+        userRepository.findAllAsFlow().map { UserResponse.from(it) }
+
+    @Transactional
+    suspend fun create(request: UserRequest): UserResponse = withContext(Dispatchers.IO) {
+        val saved = userRepository.save(request.toEntity())
+        UserResponse.from(saved)
     }
 
     @Transactional
-    public Mono<UserResponse> create(UserRequest request) {
-        return Mono.just(request)
-            .map(userMapper::toEntity)
-            .flatMap(userRepository::save)
-            .map(userMapper::toResponse);
-    }
-
-    @Transactional
-    public Mono<UserResponse> update(Long id, UserRequest request) {
-        return userRepository.findById(id)
-            .switchIfEmpty(Mono.error(
-                new EntityNotFoundException("User not found: " + id)
-            ))
-            .flatMap(existing -> {
-                userMapper.updateEntity(request, existing);
-                return userRepository.save(existing);
-            })
-            .map(userMapper::toResponse);
-    }
-
-    @Transactional
-    public Mono<Void> delete(Long id) {
-        return userRepository.findById(id)
-            .switchIfEmpty(Mono.error(
-                new EntityNotFoundException("User not found: " + id)
-            ))
-            .flatMap(userRepository::delete);
+    suspend fun delete(id: Long): Unit = withContext(Dispatchers.IO) {
+        if (!userRepository.existsById(id))
+            throw EntityNotFoundException("User $id not found")
+        userRepository.deleteById(id)
     }
 }
 ```
 
-## R2DBC Repository
+## R2DBC Repository (Fully Reactive)
 
-```java
-package com.example.domain.repository;
+```kotlin
+package pl.piomin.services.domain.repository
 
-import com.example.domain.model.User;
-import org.springframework.data.r2dbc.repository.Query;
-import org.springframework.data.r2dbc.repository.R2dbcRepository;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import kotlinx.coroutines.flow.Flow
+import org.springframework.data.r2dbc.repository.Query
+import org.springframework.data.repository.kotlin.CoroutineCrudRepository
 
-public interface UserRepository extends R2dbcRepository<User, Long> {
+// CoroutineCrudRepository: Spring Data R2DBC with Kotlin coroutines
+interface UserRepository : CoroutineCrudRepository<User, Long> {
 
-    Mono<User> findByEmail(String email);
+    suspend fun findByEmail(email: String): User?
 
-    Flux<User> findByActiveTrue();
+    fun findByActiveTrue(): Flow<User>
 
     @Query("""
         SELECT u.* FROM users u
         WHERE u.email LIKE CONCAT('%', :domain, '%')
         ORDER BY u.created_at DESC
-        """)
-    Flux<User> findByEmailDomain(String domain);
-
-    @Query("""
-        SELECT COUNT(*) FROM users
-        WHERE created_at > :since
-        """)
-    Mono<Long> countCreatedSince(Instant since);
+    """)
+    fun findByEmailDomain(domain: String): Flow<User>
 }
 ```
 
 ## R2DBC Entity
 
-```java
-package com.example.domain.model;
+```kotlin
+package pl.piomin.services.domain.model
 
-import org.springframework.data.annotation.Id;
-import org.springframework.data.annotation.CreatedDate;
-import org.springframework.data.annotation.LastModifiedDate;
-import org.springframework.data.relational.core.mapping.Table;
-
-import java.time.Instant;
+import org.springframework.data.annotation.*
+import org.springframework.data.relational.core.mapping.Table
+import java.time.Instant
 
 @Table("users")
-public record User(
-    @Id Long id,
-    String email,
-    String username,
-    Boolean active,
-    @CreatedDate Instant createdAt,
-    @LastModifiedDate Instant updatedAt
-) {
-    public User withId(Long id) {
-        return new User(id, email, username, active, createdAt, updatedAt);
-    }
-
-    public User withEmail(String email) {
-        return new User(id, email, username, active, createdAt, updatedAt);
-    }
-}
+data class User(  // R2DBC entities CAN be data class (no Hibernate proxies)
+    @Id val id: Long? = null,
+    val email: String,
+    val username: String,
+    val active: Boolean = true,
+    @CreatedDate val createdAt: Instant? = null,
+    @LastModifiedDate val updatedAt: Instant? = null
+)
 ```
+
+> ⚠️ **JPA vs R2DBC entities**: `data class` is fine for R2DBC. For JPA use `open class`.
 
 ## R2DBC Configuration
 
@@ -190,167 +137,160 @@ public record User(
 spring:
   r2dbc:
     url: r2dbc:postgresql://localhost:5432/demo
-    username: demo
-    password: demo
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
     pool:
       initial-size: 10
       max-size: 20
       max-idle-time: 30m
-
   data:
     r2dbc:
       repositories:
         enabled: true
 ```
 
-## WebClient for External APIs
+## WebClient for External APIs (Kotlin)
 
-```java
-package com.example.infrastructure.client;
+```kotlin
+package pl.piomin.services.infrastructure.client
 
-import com.example.application.dto.ExternalUserDto;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Mono;
-import reactor.util.retry.Retry;
-
-import java.time.Duration;
+import org.springframework.stereotype.Component
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.awaitBody  // Kotlin coroutine extension
+import java.time.Duration
 
 @Component
-@RequiredArgsConstructor
-public class ExternalUserClient {
+class ExternalUserClient(private val webClient: WebClient) {
 
-    private final WebClient webClient;
-
-    public Mono<ExternalUserDto> getUser(Long id) {
-        return webClient
-            .get()
+    // suspend fun using awaitBody (coroutine extension on WebClient)
+    suspend fun getUser(id: Long): ExternalUserDto =
+        webClient.get()
             .uri("/users/{id}", id)
             .retrieve()
-            .bodyToMono(ExternalUserDto.class)
-            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1)))
-            .timeout(Duration.ofSeconds(5));
-    }
+            .awaitBody()  // suspend extension — no .block() needed
 
-    public Mono<ExternalUserDto> createUser(ExternalUserDto user) {
-        return webClient
-            .post()
+    suspend fun createUser(user: ExternalUserDto): ExternalUserDto =
+        webClient.post()
             .uri("/users")
             .bodyValue(user)
             .retrieve()
-            .bodyToMono(ExternalUserDto.class);
-    }
+            .awaitBody()
 }
 
 @Configuration
 class WebClientConfig {
-
     @Bean
-    public WebClient webClient(WebClient.Builder builder) {
-        return builder
+    fun webClient(builder: WebClient.Builder): WebClient =
+        builder
             .baseUrl("https://api.example.com")
-            .defaultHeader("User-Agent", "Demo Service")
-            .build();
-    }
+            .defaultHeader("User-Agent", "My Service")
+            .build()
 }
 ```
 
-## Reactor Operators
+## Kotlin Flow Operations
 
-```java
-// Transform data
-Mono<String> mono = Mono.just("hello")
-    .map(String::toUpperCase)
-    .map(s -> s + "!")
-    .defaultIfEmpty("empty");
+```kotlin
+import kotlinx.coroutines.flow.*
 
-// Chain async operations
-Mono<UserResponse> result = userRepository.findById(id)
-    .flatMap(user -> orderRepository.findByUserId(user.id())
-        .collectList()
-        .map(orders -> new UserResponse(user, orders))
-    );
+// Transform
+val names: Flow<String> = userFlow
+    .filter { it.active }
+    .map { it.name }
+    .take(10)
 
-// Combine multiple sources
-Mono<UserDetails> combined = Mono.zip(
-    userService.getUser(id),
-    addressService.getAddress(id),
-    (user, address) -> new UserDetails(user, address)
-);
+// Collect
+userFlow.collect { user ->
+    println(user.email)
+}
+
+// Combine flows
+val combined: Flow<Pair<User, Order>> = userFlow.zip(orderFlow) { user, order ->
+    user to order
+}
 
 // Error handling
-Mono<User> safe = userRepository.findById(id)
-    .onErrorResume(DatabaseException.class, e ->
-        cacheRepository.findById(id)
-    )
-    .doOnError(e -> log.error("Failed to fetch user", e));
+val safe: Flow<User> = userFlow
+    .catch { e -> log.error("Error in flow", e) }
+    .onCompletion { log.info("Flow completed") }
 
-// Backpressure
-Flux<Data> stream = dataRepository.findAll()
-    .buffer(100)  // Process in batches
-    .flatMap(batch -> processBatch(batch), 5);  // Max 5 concurrent
+// Convert from Reactor Flux
+val kotlinFlow: Flow<User> = reactorFlux.asFlow()
+
+// Convert to Reactor Flux
+val reactorFlux: Flux<User> = kotlinFlow.asFlux()
 ```
 
-## Testing Reactive Code
+## Bridging Coroutines ↔ Reactor
 
-```java
-package com.example.application.service;
+```kotlin
+import kotlinx.coroutines.reactor.mono
+import kotlinx.coroutines.reactor.flux
+import reactor.core.publisher.Mono
+import reactor.core.publisher.Flux
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import reactor.core.publisher.Mono;
-import reactor.test.StepVerifier;
+// Coroutine → Mono
+fun userMono(id: Long): Mono<User> = mono {
+    userRepository.findById(id) ?: throw EntityNotFoundException("User $id not found")
+}
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
+// Coroutine → Flux
+fun userFlux(): Flux<User> = flux {
+    userRepository.findAll().collect { send(it) }
+}
 
-@ExtendWith(MockitoExtension.class)
+// Mono → suspend
+suspend fun fromMono(): User = userMono(1L).awaitSingle()
+
+// Flux → Flow
+val flow: Flow<User> = userFlux().asFlow()
+```
+
+## Testing Coroutines (runTest)
+
+```kotlin
+import io.mockk.coEvery
+import io.mockk.coVerify
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Test
+
 class UserServiceTest {
 
-    @Mock
-    private UserRepository userRepository;
-
-    @InjectMocks
-    private UserService userService;
+    @MockK lateinit var repository: UserRepository
+    @InjectMockKs lateinit var service: UserService
 
     @Test
-    void shouldFindUserById() {
-        User user = new User(1L, "test@example.com", "testuser", true, null, null);
-        when(userRepository.findById(1L)).thenReturn(Mono.just(user));
+    fun `findById - suspend function - returns user`() = runTest {
+        coEvery { repository.findById(1L) } returns Optional.of(User(id = 1L))
 
-        StepVerifier.create(userService.findById(1L))
-            .expectNextMatches(response ->
-                response.email().equals("test@example.com")
-            )
-            .verifyComplete();
+        val result = service.findById(1L)
+
+        assertThat(result).isNotNull
+        coVerify { repository.findById(1L) }
     }
 
     @Test
-    void shouldThrowWhenUserNotFound() {
-        when(userRepository.findById(1L)).thenReturn(Mono.empty());
+    fun `findAll - flow - emits users`() = runTest {
+        val users = listOf(User(id = 1L), User(id = 2L))
+        every { repository.findAllAsFlow() } returns users.asFlow()
 
-        StepVerifier.create(userService.findById(1L))
-            .expectError(EntityNotFoundException.class)
-            .verify();
+        val result = service.findAll().toList()
+
+        assertThat(result).hasSize(2)
     }
 }
 ```
 
 ## Quick Reference
 
-| Operator | Purpose |
-|----------|---------|
-| `Mono.just()` | Create Mono from value |
-| `Flux.fromIterable()` | Create Flux from collection |
-| `.map()` | Transform synchronously |
-| `.flatMap()` | Transform to Mono/Flux |
-| `.filter()` | Filter elements |
-| `.switchIfEmpty()` | Fallback for empty |
-| `.zip()` | Combine multiple sources |
-| `.retry()` | Retry on error |
-| `.timeout()` | Set timeout |
-| `.subscribe()` | Trigger execution |
+| Pattern | Code |
+|---------|------|
+| Suspend controller | `suspend fun get(@PathVariable id: Long): ResponseEntity<T>` |
+| Flow endpoint | `fun getAll(): Flow<T>` |
+| Blocking in suspend | `withContext(Dispatchers.IO) { blockingCall() }` |
+| R2DBC repository | `CoroutineCrudRepository<T, ID>` |
+| WebClient coroutine | `.retrieve().awaitBody<T>()` |
+| Mono → suspend | `mono.awaitSingle()` |
+| Flux → Flow | `flux.asFlow()` |
+| Test suspend | `@Test fun \`name\`() = runTest { ... }` |
+| Mock suspend | `coEvery { } returns` / `coVerify { }` |

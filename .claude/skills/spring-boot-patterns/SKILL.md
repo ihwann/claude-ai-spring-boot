@@ -1,45 +1,41 @@
 ---
 name: spring-boot-patterns
-description: Spring Boot best practices and patterns. Use when creating controllers, services, repositories, or when user asks about Spring Boot architecture, REST APIs, exception handling, or JPA patterns.
+description: Kotlin/Spring Boot best practices and patterns. Use when creating controllers, services, repositories, or when user asks about Spring Boot architecture, REST APIs, exception handling, or JPA patterns in Kotlin.
 ---
 
-# Spring Boot Patterns Skill
+# Spring Boot Patterns Skill (Kotlin)
 
-Best practices and patterns for Spring Boot applications.
+Best practices and patterns for Kotlin/Spring Boot applications.
 
 ## When to Use
 - User says "create controller" / "add service" / "Spring Boot help"
-- Reviewing Spring Boot code
-- Setting up new Spring Boot project structure
+- Reviewing Kotlin Spring Boot code
+- Setting up new Kotlin/Spring Boot project structure
 
 ## Project Structure
 
 ```
-src/main/java/com/example/myapp/
-├── MyAppApplication.java          # @SpringBootApplication
-├── config/                        # Configuration classes
-│   ├── SecurityConfig.java
-│   └── WebConfig.java
-├── controller/                    # REST controllers
-│   └── UserController.java
-├── service/                       # Business logic
-│   ├── UserService.java
-│   └── impl/
-│       └── UserServiceImpl.java
-├── repository/                    # Data access
-│   └── UserRepository.java
-├── model/                         # Entities
-│   └── User.java
-├── dto/                           # Data transfer objects
+src/main/kotlin/pl/piomin/services/
+├── Application.kt                  # @SpringBootApplication
+├── config/                         # Configuration classes
+│   ├── SecurityConfig.kt           # Kotlin DSL security
+│   └── WebConfig.kt
+├── controller/                     # REST controllers
+│   └── UserController.kt
+├── service/                        # Business logic
+│   └── UserService.kt
+├── repository/                     # Data access
+│   └── UserRepository.kt
+├── model/                          # JPA Entities (open class)
+│   └── User.kt
+├── dto/                            # Data transfer objects (data class)
 │   ├── request/
-│   │   └── CreateUserRequest.java
+│   │   └── CreateUserRequest.kt
 │   └── response/
-│       └── UserResponse.java
-├── exception/                     # Custom exceptions
-│   ├── ResourceNotFoundException.java
-│   └── GlobalExceptionHandler.java
-└── util/                          # Utilities
-    └── DateUtils.java
+│       └── UserResponse.kt
+└── exception/                      # Custom exceptions + handler
+    ├── ResourceNotFoundException.kt
+    └── GlobalExceptionHandler.kt
 ```
 
 ---
@@ -47,47 +43,40 @@ src/main/java/com/example/myapp/
 ## Controller Patterns
 
 ### REST Controller Template
-```java
+
+```kotlin
 @RestController
 @RequestMapping("/api/v1/users")
-@RequiredArgsConstructor  // Lombok for constructor injection
-public class UserController {
-
-    private final UserService userService;
+class UserController(private val userService: UserService) {  // constructor injection
 
     @GetMapping
-    public ResponseEntity<List<UserResponse>> getAll() {
-        return ResponseEntity.ok(userService.findAll());
-    }
+    fun getAll(): ResponseEntity<List<UserResponse>> =
+        ResponseEntity.ok(userService.findAll())
 
     @GetMapping("/{id}")
-    public ResponseEntity<UserResponse> getById(@PathVariable Long id) {
-        return ResponseEntity.ok(userService.findById(id));
-    }
+    fun getById(@PathVariable id: Long): ResponseEntity<UserResponse> =
+        ResponseEntity.ok(userService.findById(id))
 
     @PostMapping
-    public ResponseEntity<UserResponse> create(
-            @Valid @RequestBody CreateUserRequest request) {
-        UserResponse created = userService.create(request);
-        URI location = ServletUriComponentsBuilder.fromCurrentRequest()
+    fun create(@Valid @RequestBody request: CreateUserRequest): ResponseEntity<UserResponse> {
+        val created = userService.create(request)
+        val location = ServletUriComponentsBuilder.fromCurrentRequest()
             .path("/{id}")
-            .buildAndExpand(created.getId())
-            .toUri();
-        return ResponseEntity.created(location).body(created);
+            .buildAndExpand(created.id)
+            .toUri()
+        return ResponseEntity.created(location).body(created)
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<UserResponse> update(
-            @PathVariable Long id,
-            @Valid @RequestBody UpdateUserRequest request) {
-        return ResponseEntity.ok(userService.update(id, request));
-    }
+    fun update(
+        @PathVariable id: Long,
+        @Valid @RequestBody request: UpdateUserRequest
+    ): ResponseEntity<UserResponse> =
+        ResponseEntity.ok(userService.update(id, request))
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable Long id) {
-        userService.delete(id);
-        return ResponseEntity.noContent().build();
-    }
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    fun delete(@PathVariable id: Long) = userService.delete(id)
 }
 ```
 
@@ -102,166 +91,140 @@ public class UserController {
 | Validation | `@Valid` on request body |
 
 ### ❌ Anti-patterns
-```java
+
+```kotlin
 // ❌ Business logic in controller
 @PostMapping
-public User create(@RequestBody User user) {
-    user.setCreatedAt(LocalDateTime.now());  // Logic belongs in service
-    return userRepository.save(user);         // Direct repo access
+fun create(@RequestBody user: User): User {
+    user.createdAt = LocalDateTime.now()  // logic belongs in service
+    return userRepository.save(user)      // direct repo access
 }
 
-// ❌ Returning entity directly (exposes internals)
+// ❌ Returning entity directly (exposes internals + Hibernate proxy issues)
 @GetMapping("/{id}")
-public User getById(@PathVariable Long id) {
-    return userRepository.findById(id).get();
-}
+fun getById(@PathVariable id: Long): User =
+    userRepository.findById(id).get()
 ```
 
 ---
 
 ## Service Patterns
 
-### Service Interface + Implementation
-```java
-// Interface
-public interface UserService {
-    List<UserResponse> findAll();
-    UserResponse findById(Long id);
-    UserResponse create(CreateUserRequest request);
-    UserResponse update(Long id, UpdateUserRequest request);
-    void delete(Long id);
-}
+### Service with Constructor Injection
 
-// Implementation
+```kotlin
 @Service
-@RequiredArgsConstructor
-@Transactional(readOnly = true)  // Default read-only
-public class UserServiceImpl implements UserService {
+@Transactional(readOnly = true)  // default read-only
+class UserService(private val userRepository: UserRepository) {
 
-    private final UserRepository userRepository;
-    private final UserMapper userMapper;
+    fun findAll(): List<UserResponse> =
+        userRepository.findAll().map { UserResponse.from(it) }
 
-    @Override
-    public List<UserResponse> findAll() {
-        return userRepository.findAll().stream()
-            .map(userMapper::toResponse)
-            .toList();
-    }
+    fun findById(id: Long): UserResponse =
+        userRepository.findById(id)
+            .map { UserResponse.from(it) }
+            .orElseThrow { ResourceNotFoundException("User", id) }
 
-    @Override
-    public UserResponse findById(Long id) {
-        return userRepository.findById(id)
-            .map(userMapper::toResponse)
-            .orElseThrow(() -> new ResourceNotFoundException("User", id));
-    }
-
-    @Override
-    @Transactional  // Write transaction
-    public UserResponse create(CreateUserRequest request) {
-        User user = userMapper.toEntity(request);
-        User saved = userRepository.save(user);
-        return userMapper.toResponse(saved);
-    }
-
-    @Override
     @Transactional
-    public void delete(Long id) {
-        if (!userRepository.existsById(id)) {
-            throw new ResourceNotFoundException("User", id);
-        }
-        userRepository.deleteById(id);
+    fun create(request: CreateUserRequest): UserResponse =
+        userRepository.save(request.toEntity()).let { UserResponse.from(it) }
+
+    @Transactional
+    fun update(id: Long, request: UpdateUserRequest): UserResponse {
+        val user = userRepository.findById(id)
+            .orElseThrow { ResourceNotFoundException("User", id) }
+        user.name = request.name
+        user.email = request.email
+        return UserResponse.from(user)
+    }
+
+    @Transactional
+    fun delete(id: Long) {
+        if (!userRepository.existsById(id))
+            throw ResourceNotFoundException("User", id)
+        userRepository.deleteById(id)
     }
 }
 ```
 
 ### Service Best Practices
 
-- Interface + Impl for testability
+- Constructor injection (primary constructor) — no `@Autowired` needed
 - `@Transactional(readOnly = true)` at class level
-- `@Transactional` for write methods
+- `@Transactional` for write methods (overrides class-level)
 - Throw domain exceptions, not generic ones
-- Use mappers (MapStruct) for entity ↔ DTO conversion
+- Use companion object or extension functions for entity ↔ DTO conversion
 
 ---
 
 ## Repository Patterns
 
 ### JPA Repository
-```java
-public interface UserRepository extends JpaRepository<User, Long> {
+
+```kotlin
+interface UserRepository : JpaRepository<User, Long> {
 
     // Derived query
-    Optional<User> findByEmail(String email);
+    fun findByEmail(email: String): Optional<User>
 
-    List<User> findByActiveTrue();
+    fun findByActiveTrue(): List<User>
 
     // Custom query
     @Query("SELECT u FROM User u WHERE u.department.id = :deptId")
-    List<User> findByDepartmentId(@Param("deptId") Long departmentId);
+    fun findByDepartmentId(@Param("deptId") departmentId: Long): List<User>
 
-    // Native query (use sparingly)
-    @Query(value = "SELECT * FROM users WHERE created_at > :date",
-           nativeQuery = true)
-    List<User> findRecentUsers(@Param("date") LocalDate date);
+    // Projection
+    @EntityGraph(attributePaths = ["roles"])
+    fun findByEmailWithRoles(email: String): Optional<User>
 
-    // Exists check (more efficient than findBy)
-    boolean existsByEmail(String email);
+    // Existence check (more efficient than findBy)
+    fun existsByEmail(email: String): Boolean
 
-    // Count
-    long countByActiveTrue();
+    fun countByActiveTrue(): Long
 }
 ```
-
-### Repository Best Practices
-
-- Use derived queries when possible
-- `Optional` for single results
-- `existsBy` instead of `findBy` for existence checks
-- Avoid native queries unless necessary
-- Use `@EntityGraph` for fetch optimization
 
 ---
 
 ## DTO Patterns
 
-### Request/Response DTOs
-```java
-// Request DTO with validation
-public record CreateUserRequest(
-    @NotBlank(message = "Name is required")
-    @Size(min = 2, max = 100)
-    String name,
+### Request DTO (data class with @field: validation)
 
-    @NotBlank
-    @Email(message = "Invalid email format")
-    String email,
+```kotlin
+data class CreateUserRequest(
+    @field:NotBlank(message = "Name is required")
+    @field:Size(min = 2, max = 100)
+    val name: String,
 
-    @NotNull
-    @Min(18)
-    Integer age
-) {}
+    @field:NotBlank
+    @field:Email(message = "Invalid email format")
+    val email: String,
 
-// Response DTO
-public record UserResponse(
-    Long id,
-    String name,
-    String email,
-    LocalDateTime createdAt
-) {}
+    @field:NotNull
+    @field:Min(18)
+    val age: Int
+) {
+    fun toEntity(): User = User(name = name, email = email, age = age)
+}
 ```
 
-### MapStruct Mapper
-```java
-@Mapper(componentModel = "spring")
-public interface UserMapper {
+### Response DTO (data class with companion factory)
 
-    UserResponse toResponse(User entity);
-
-    List<UserResponse> toResponseList(List<User> entities);
-
-    @Mapping(target = "id", ignore = true)
-    @Mapping(target = "createdAt", ignore = true)
-    User toEntity(CreateUserRequest request);
+```kotlin
+data class UserResponse(
+    val id: Long,
+    val name: String,
+    val email: String,
+    val createdAt: LocalDateTime?
+) {
+    companion object {
+        fun from(user: User) = UserResponse(
+            id = user.id,
+            name = user.name,
+            email = user.email,
+            createdAt = user.createdAt
+        )
+    }
 }
 ```
 
@@ -270,57 +233,50 @@ public interface UserMapper {
 ## Exception Handling
 
 ### Custom Exceptions
-```java
-public class ResourceNotFoundException extends RuntimeException {
 
-    public ResourceNotFoundException(String resource, Long id) {
-        super(String.format("%s not found with id: %d", resource, id));
-    }
-}
+```kotlin
+class ResourceNotFoundException(resource: String, id: Long) :
+    RuntimeException("$resource not found with id: $id")
 
-public class BusinessException extends RuntimeException {
+class BusinessException(val code: String, message: String) :
+    RuntimeException(message)
 
-    private final String code;
-
-    public BusinessException(String code, String message) {
-        super(message);
-        this.code = code;
-    }
-}
+class DuplicateResourceException(resource: String, field: String) :
+    RuntimeException("$resource already exists with $field")
 ```
 
 ### Global Exception Handler
-```java
+
+```kotlin
 @RestControllerAdvice
-@Slf4j
-public class GlobalExceptionHandler {
+class GlobalExceptionHandler {
 
-    @ExceptionHandler(ResourceNotFoundException.class)
-    public ResponseEntity<ErrorResponse> handleNotFound(ResourceNotFoundException ex) {
-        log.warn("Resource not found: {}", ex.getMessage());
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    @ExceptionHandler(ResourceNotFoundException::class)
+    fun handleNotFound(ex: ResourceNotFoundException): ResponseEntity<ErrorResponse> {
+        log.warn("Resource not found: {}", ex.message)
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
-            .body(new ErrorResponse("NOT_FOUND", ex.getMessage()));
+            .body(ErrorResponse("NOT_FOUND", ex.message ?: "Not found"))
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ErrorResponse> handleValidation(
-            MethodArgumentNotValidException ex) {
-        List<String> errors = ex.getBindingResult().getFieldErrors().stream()
-            .map(e -> e.getField() + ": " + e.getDefaultMessage())
-            .toList();
+    @ExceptionHandler(MethodArgumentNotValidException::class)
+    fun handleValidation(ex: MethodArgumentNotValidException): ResponseEntity<ErrorResponse> {
+        val errors = ex.bindingResult.fieldErrors
+            .joinToString(", ") { "${it.field}: ${it.defaultMessage}" }
         return ResponseEntity.badRequest()
-            .body(new ErrorResponse("VALIDATION_ERROR", errors.toString()));
+            .body(ErrorResponse("VALIDATION_ERROR", errors))
     }
 
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponse> handleGeneric(Exception ex) {
-        log.error("Unexpected error", ex);
+    @ExceptionHandler(Exception::class)
+    fun handleGeneric(ex: Exception): ResponseEntity<ErrorResponse> {
+        log.error("Unexpected error", ex)
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-            .body(new ErrorResponse("INTERNAL_ERROR", "An unexpected error occurred"));
+            .body(ErrorResponse("INTERNAL_ERROR", "An unexpected error occurred"))
     }
 }
 
-public record ErrorResponse(String code, String message) {}
+data class ErrorResponse(val code: String, val message: String)
 ```
 
 ---
@@ -328,8 +284,8 @@ public record ErrorResponse(String code, String message) {}
 ## Configuration Patterns
 
 ### Application Properties
+
 ```yaml
-# application.yml
 spring:
   datasource:
     url: jdbc:postgresql://localhost:5432/mydb
@@ -337,7 +293,8 @@ spring:
     password: ${DB_PASSWORD}
   jpa:
     hibernate:
-      ddl-auto: validate  # Never 'create' in production!
+      ddl-auto: validate
+    open-in-view: false  # Always disable! Prevents lazy loading outside transaction
     show-sql: false
 
 app:
@@ -346,121 +303,139 @@ app:
     expiration: 86400000
 ```
 
-### Configuration Properties Class
-```java
+### Configuration Properties (data class)
+
+```kotlin
 @Configuration
 @ConfigurationProperties(prefix = "app.jwt")
 @Validated
-public class JwtProperties {
-
-    @NotBlank
-    private String secret;
-
-    @Min(60000)
-    private long expiration;
-
-    // getters and setters
-}
-```
-
-### Profile-Specific Configuration
-```
-src/main/resources/
-├── application.yml           # Common config
-├── application-dev.yml       # Development
-├── application-test.yml      # Testing
-└── application-prod.yml      # Production
+data class JwtProperties(
+    @field:NotBlank val secret: String = "",
+    @field:Min(60000) val expiration: Long = 0
+)
 ```
 
 ---
 
-## Common Annotations Quick Reference
+## Spring Security (Kotlin DSL)
 
-| Annotation | Purpose |
-|------------|---------|
-| `@RestController` | REST controller (combines @Controller + @ResponseBody) |
-| `@Service` | Business logic component |
-| `@Repository` | Data access component |
-| `@Configuration` | Configuration class |
-| `@RequiredArgsConstructor` | Lombok: constructor injection |
-| `@Transactional` | Transaction management |
-| `@Valid` | Trigger validation |
-| `@ConfigurationProperties` | Bind properties to class |
-| `@Profile("dev")` | Profile-specific bean |
-| `@Scheduled` | Scheduled tasks |
+```kotlin
+@Configuration
+@EnableMethodSecurity
+class SecurityConfig {
+
+    @Bean
+    fun filterChain(http: HttpSecurity): SecurityFilterChain = http {
+        csrf { disable() }
+        sessionManagement { sessionCreationPolicy = SessionCreationPolicy.STATELESS }
+        authorizeHttpRequests {
+            authorize("/actuator/health", permitAll)
+            authorize("/api/public/**", permitAll)
+            authorize("/api/admin/**", hasRole("ADMIN"))
+            authorize(anyRequest, authenticated)
+        }
+        oauth2ResourceServer { jwt { } }
+    }.build()
+}
+```
 
 ---
 
 ## Testing Patterns
 
-### Controller Test (MockMvc)
-```java
-@WebMvcTest(UserController.class)
+### Controller Test (MockK + SpringMockK)
+
+```kotlin
+@WebMvcTest(UserController::class)
 class UserControllerTest {
 
-    @Autowired
-    private MockMvc mockMvc;
-
-    @MockBean
-    private UserService userService;
+    @Autowired lateinit var mockMvc: MockMvc
+    @MockkBean lateinit var userService: UserService  // SpringMockK
 
     @Test
-    void shouldReturnUser() throws Exception {
-        when(userService.findById(1L))
-            .thenReturn(new UserResponse(1L, "John", "john@example.com", null));
+    fun `getById - existing user - returns 200`() {
+        val response = UserResponse(1L, "John", "john@example.com", null)
+        every { userService.findById(1L) } returns response
 
         mockMvc.perform(get("/api/v1/users/1"))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.name").value("John"));
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.name").value("John"))
     }
-}
-```
-
-### Service Test
-```java
-@ExtendWith(MockitoExtension.class)
-class UserServiceImplTest {
-
-    @Mock
-    private UserRepository userRepository;
-
-    @Mock
-    private UserMapper userMapper;
-
-    @InjectMocks
-    private UserServiceImpl userService;
 
     @Test
-    void shouldThrowWhenUserNotFound() {
-        when(userRepository.findById(1L)).thenReturn(Optional.empty());
+    fun `getById - not found - returns 404`() {
+        every { userService.findById(999L) } throws ResourceNotFoundException("User", 999L)
 
-        assertThatThrownBy(() -> userService.findById(1L))
-            .isInstanceOf(ResourceNotFoundException.class);
+        mockMvc.perform(get("/api/v1/users/999"))
+            .andExpect(status().isNotFound)
     }
 }
 ```
 
-### Integration Test
-```java
+### Service Test (MockK)
+
+```kotlin
+@ExtendWith(MockKExtension::class)
+class UserServiceTest {
+
+    @MockK lateinit var userRepository: UserRepository
+    @InjectMockKs lateinit var userService: UserService
+
+    @Test
+    fun `findById - existing user - returns response`() {
+        val user = User(id = 1L, name = "John", email = "john@example.com")
+        every { userRepository.findById(1L) } returns Optional.of(user)
+
+        val result = userService.findById(1L)
+
+        assertThat(result.name).isEqualTo("John")
+        verify { userRepository.findById(1L) }
+        confirmVerified(userRepository)
+    }
+
+    @Test
+    fun `findById - not found - throws exception`() {
+        every { userRepository.findById(any()) } returns Optional.empty()
+
+        assertThatThrownBy { userService.findById(1L) }
+            .isInstanceOf(ResourceNotFoundException::class.java)
+    }
+}
+```
+
+### Integration Test (TestContainers)
+
+```kotlin
 @SpringBootTest
 @AutoConfigureMockMvc
 @Testcontainers
 class UserIntegrationTest {
 
     @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15");
+    companion object {
+        @JvmStatic
+        val postgres = PostgreSQLContainer<Nothing>("postgres:17-alpine")
+            .apply { start() }
 
-    @Autowired
-    private MockMvc mockMvc;
+        @JvmStatic
+        @DynamicPropertySource
+        fun configureProperties(registry: DynamicPropertyRegistry) {
+            registry.add("spring.datasource.url", postgres::getJdbcUrl)
+            registry.add("spring.datasource.username", postgres::getUsername)
+            registry.add("spring.datasource.password", postgres::getPassword)
+        }
+    }
+
+    @Autowired lateinit var mockMvc: MockMvc
 
     @Test
-    void shouldCreateUser() throws Exception {
-        mockMvc.perform(post("/api/v1/users")
+    fun `createUser - valid request - returns 201`() {
+        mockMvc.perform(
+            post("/api/v1/users")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""
-                    {"name": "John", "email": "john@example.com", "age": 25}
-                    """))
-            .andExpect(status().isCreated());
+                .content("""{"name": "John", "email": "john@example.com", "age": 25}""")
+        )
+            .andExpect(status().isCreated)
     }
 }
 ```
@@ -469,11 +444,19 @@ class UserIntegrationTest {
 
 ## Quick Reference Card
 
-| Layer | Responsibility | Annotations |
+| Layer | Responsibility | Kotlin Type |
 |-------|---------------|-------------|
-| Controller | HTTP handling, validation | `@RestController`, `@Valid` |
-| Service | Business logic, transactions | `@Service`, `@Transactional` |
-| Repository | Data access | `@Repository`, extends `JpaRepository` |
-| DTO | Data transfer | Records with validation annotations |
-| Config | Configuration | `@Configuration`, `@ConfigurationProperties` |
+| Controller | HTTP handling, validation | `class` with `@RestController` |
+| Service | Business logic, transactions | `class` with `@Service` |
+| Repository | Data access | `interface` extends `JpaRepository` |
+| Entity | JPA model | `open class` with `@Entity` |
+| DTO | Data transfer | `data class` with `@field:` validation |
+| Config | Configuration | `@Configuration` + Kotlin DSL |
 | Exception | Error handling | `@RestControllerAdvice` |
+
+| Annotation | Note |
+|------------|------|
+| `@MockkBean` | Use instead of `@MockBean` in Spring tests |
+| `@field:NotBlank` | Always use `@field:` target on data class params |
+| `open class` | JPA entities must be open (all-open plugin handles automatically) |
+| `http { }` | Kotlin DSL for SecurityFilterChain |

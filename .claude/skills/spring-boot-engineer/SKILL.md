@@ -1,28 +1,28 @@
 ---
 name: spring-boot-engineer
-description: Generates Spring Boot 3.x configurations, creates REST controllers, implements Spring Security 6 authentication flows, sets up Spring Data JPA repositories, and configures reactive WebFlux endpoints. Use when building Spring Boot 3.x applications, microservices, or reactive Java applications; invoke for Spring Data JPA, Spring Security 6, WebFlux, Spring Cloud integration, Java REST API design, or Microservices Java architecture.
+description: Generates Kotlin/Spring Boot 3.x configurations, creates REST controllers, implements Spring Security 6 with Kotlin DSL, sets up Spring Data JPA repositories, and configures coroutine-based async endpoints. Use when building Kotlin/Spring Boot 3.x applications, microservices, or async Kotlin applications; invoke for Spring Data JPA, Spring Security 6, WebFlux/Coroutines, Spring Cloud integration, Kotlin REST API design, or Microservices Kotlin architecture.
 license: MIT
 metadata:
   author: https://github.com/Jeffallan
-  version: "1.1.0"
+  version: "2.0.0"
   domain: backend
-  triggers: Spring Boot, Spring Framework, Spring Cloud, Spring Security, Spring Data JPA, Spring WebFlux, Microservices Java, Java REST API, Reactive Java
+  triggers: Spring Boot, Spring Framework, Spring Cloud, Spring Security, Spring Data JPA, Spring WebFlux, Coroutines, Kotlin REST API, Microservices Kotlin
   role: specialist
   scope: implementation
   output-format: code
-  related-skills: java-architect, database-optimizer, microservices-architect, devops-engineer
+  related-skills: kotlin-architect, database-optimizer, microservices-architect, devops-engineer
 ---
 
-# Spring Boot Engineer
+# Spring Boot Engineer (Kotlin)
 
 ## Core Workflow
 
 1. **Analyze requirements** — Identify service boundaries, APIs, data models, security needs
 2. **Design architecture** — Plan microservices, data access, cloud integration, security; confirm design before coding
 3. **Implement** — Create services with constructor injection and layered architecture (see Quick Start below)
-4. **Secure** — Add Spring Security, OAuth2, method security, CORS configuration; verify security rules compile and pass tests. If compilation or tests fail: review error output, fix the failing rule or configuration, and re-run before proceeding
-5. **Test** — Write unit, integration, and slice tests; run `./mvnw test` (or `./gradlew test`) and confirm all pass before proceeding. If tests fail: review the stack trace, isolate the failing assertion or component, fix the issue, and re-run the full suite
-6. **Deploy** — Configure health checks and observability via Actuator; validate `/actuator/health` returns `UP`. If health is `DOWN`: check the `components` detail in the response, resolve the failing component (e.g., datasource, broker), and re-validate
+4. **Secure** — Add Spring Security Kotlin DSL, OAuth2, method security, CORS; verify security rules compile and pass tests
+5. **Test** — Write unit (MockK), integration (TestContainers), and slice tests; run `./mvnw test` and confirm all pass
+6. **Deploy** — Configure health checks and observability via Actuator; validate `/actuator/health` returns `UP`
 
 ## Reference Guide
 
@@ -34,140 +34,181 @@ Load detailed guidance based on context:
 | Data Access | `references/data.md` | Spring Data JPA, repositories, transactions, projections |
 | Security | `references/security.md` | Spring Security 6, OAuth2, JWT, method security |
 | Cloud Native | `references/cloud.md` | Spring Cloud, Config, Discovery, Gateway, resilience |
-| Testing | `references/testing.md` | @SpringBootTest, MockMvc, Testcontainers, test slices |
+| Testing | `references/testing.md` | MockK, @SpringBootTest, MockMvc, Testcontainers |
 
 ## Quick Start — Minimal Working Structure
 
-A standard Spring Boot feature consists of these layers. Use these as copy-paste starting points.
+A standard Kotlin/Spring Boot feature consists of these layers.
 
 ### Entity
 
-```java
+```kotlin
 @Entity
 @Table(name = "products")
-public class Product {
+open class Product(  // open: required for Hibernate proxies (all-open plugin handles @Entity automatically)
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    val id: Long = 0,
 
-    @NotBlank
-    private String name;
+    @field:NotBlank
+    var name: String = "",
 
-    @DecimalMin("0.0")
-    private BigDecimal price;
-
-    // getters / setters or use @Data (Lombok)
-}
+    @field:DecimalMin("0.0")
+    var price: BigDecimal = BigDecimal.ZERO
+)
+// ⚠️ Do NOT use data class for JPA entities — copy() / equals() / hashCode() break Hibernate proxies
 ```
 
 ### Repository
 
-```java
-public interface ProductRepository extends JpaRepository<Product, Long> {
-    List<Product> findByNameContainingIgnoreCase(String name);
+```kotlin
+interface ProductRepository : JpaRepository<Product, Long> {
+    fun findByNameContainingIgnoreCase(name: String): List<Product>
 }
 ```
 
-### Service (constructor injection)
+### Service (constructor injection — primary constructor)
 
-```java
+```kotlin
 @Service
-public class ProductService {
-    private final ProductRepository repo;
-
-    public ProductService(ProductRepository repo) { // constructor injection — no @Autowired
-        this.repo = repo;
-    }
+class ProductService(private val repo: ProductRepository) {  // no @Autowired needed
 
     @Transactional(readOnly = true)
-    public List<Product> search(String name) {
-        return repo.findByNameContainingIgnoreCase(name);
-    }
+    fun search(name: String): List<Product> =
+        repo.findByNameContainingIgnoreCase(name)
 
     @Transactional
-    public Product create(ProductRequest request) {
-        var product = new Product();
-        product.setName(request.name());
-        product.setPrice(request.price());
-        return repo.save(product);
+    fun create(request: ProductRequest): Product =
+        repo.save(Product(name = request.name, price = request.price))
+
+    @Transactional
+    fun delete(id: Long) {
+        if (!repo.existsById(id)) throw EntityNotFoundException("Product $id not found")
+        repo.deleteById(id)
     }
 }
 ```
 
 ### REST Controller
 
-```java
+```kotlin
 @RestController
 @RequestMapping("/api/v1/products")
 @Validated
-public class ProductController {
-    private final ProductService service;
-
-    public ProductController(ProductService service) {
-        this.service = service;
-    }
+class ProductController(private val service: ProductService) {
 
     @GetMapping
-    public List<Product> search(@RequestParam(defaultValue = "") String name) {
-        return service.search(name);
-    }
+    fun search(@RequestParam(defaultValue = "") name: String): List<Product> =
+        service.search(name)
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Product create(@Valid @RequestBody ProductRequest request) {
-        return service.create(request);
-    }
+    fun create(@Valid @RequestBody request: ProductRequest): Product =
+        service.create(request)
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    fun delete(@PathVariable id: Long) = service.delete(id)
 }
 ```
 
-### DTO (record)
+### DTO (data class with @field: validation targets)
 
-```java
-public record ProductRequest(
-    @NotBlank String name,
-    @DecimalMin("0.0") BigDecimal price
-) {}
+```kotlin
+data class ProductRequest(
+    @field:NotBlank(message = "Name is required")
+    val name: String,
+
+    @field:DecimalMin("0.0", message = "Price must be non-negative")
+    val price: BigDecimal
+)
+// @field: is REQUIRED — without it, validation annotations on constructor params are ignored
 ```
 
 ### Global Exception Handler
 
-```java
+```kotlin
 @RestControllerAdvice
-public class GlobalExceptionHandler {
-    @ExceptionHandler(MethodArgumentNotValidException.class)
+class GlobalExceptionHandler {
+
+    @ExceptionHandler(MethodArgumentNotValidException::class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public Map<String, String> handleValidation(MethodArgumentNotValidException ex) {
-        return ex.getBindingResult().getFieldErrors().stream()
-            .collect(Collectors.toMap(FieldError::getField, FieldError::getDefaultMessage));
+    fun handleValidation(ex: MethodArgumentNotValidException): Map<String, String?> =
+        ex.bindingResult.fieldErrors.associate { it.field to it.defaultMessage }
+
+    @ExceptionHandler(EntityNotFoundException::class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    fun handleNotFound(ex: EntityNotFoundException): Map<String, String?> =
+        mapOf("error" to ex.message)
+}
+```
+
+### Spring Security (Kotlin DSL)
+
+```kotlin
+@Configuration
+@EnableMethodSecurity
+class SecurityConfig {
+
+    @Bean
+    fun filterChain(http: HttpSecurity): SecurityFilterChain = http {
+        csrf { disable() }
+        sessionManagement { sessionCreationPolicy = SessionCreationPolicy.STATELESS }
+        authorizeHttpRequests {
+            authorize("/actuator/health", permitAll)
+            authorize(anyRequest, authenticated)
+        }
+        oauth2ResourceServer { jwt { } }
+    }.build()
+}
+```
+
+### Test Slice (MockK + SpringMockK)
+
+```kotlin
+@WebMvcTest(ProductController::class)
+class ProductControllerTest {
+
+    @Autowired lateinit var mockMvc: MockMvc
+    @MockkBean lateinit var service: ProductService  // SpringMockK — not @MockBean
+
+    @Test
+    fun `createProduct - valid request - returns 201`() {
+        val product = Product(name = "Widget", price = BigDecimal.TEN)
+        every { service.create(any()) } returns product
+
+        mockMvc.perform(
+            post("/api/v1/products")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"name":"Widget","price":10.0}""")
+        )
+            .andExpect(status().isCreated)
+            .andExpect(jsonPath("$.name").value("Widget"))
+
+        verify { service.create(any()) }
     }
 
-    @ExceptionHandler(EntityNotFoundException.class)
-    @ResponseStatus(HttpStatus.NOT_FOUND)
-    public Map<String, String> handleNotFound(EntityNotFoundException ex) {
-        return Map.of("error", ex.getMessage());
+    @Test
+    fun `createProduct - blank name - returns 400`() {
+        mockMvc.perform(
+            post("/api/v1/products")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"name":"","price":10.0}""")
+        )
+            .andExpect(status().isBadRequest)
     }
 }
 ```
 
-### Test Slice
+### Application Entry Point
 
-```java
-@WebMvcTest(ProductController.class)
-class ProductControllerTest {
-    @Autowired MockMvc mockMvc;
-    @MockBean ProductService service;
+```kotlin
+@SpringBootApplication
+@EnableJpaAuditing
+class MyApplication
 
-    @Test
-    void createProduct_validRequest_returns201() throws Exception {
-        var product = new Product(); product.setName("Widget"); product.setPrice(BigDecimal.TEN);
-        when(service.create(any())).thenReturn(product);
-
-        mockMvc.perform(post("/api/v1/products")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("""{"name":"Widget","price":10.0}"""))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.name").value("Widget"));
-    }
+fun main(args: Array<String>) {
+    runApplication<MyApplication>(*args)
 }
 ```
 
@@ -177,19 +218,23 @@ class ProductControllerTest {
 
 | Rule | Correct Pattern |
 |------|----------------|
-| Constructor injection | `public MyService(Dep dep) { this.dep = dep; }` |
-| Validate API input | `@Valid @RequestBody MyRequest req` on every mutating endpoint |
-| Type-safe config | `@ConfigurationProperties(prefix = "app")` bound to a record/class |
+| Constructor injection | `class MyService(private val dep: Dep)` — primary constructor |
+| Validate API input | `@Valid @RequestBody MyRequest` on every mutating endpoint |
+| `@field:` validation | `data class Req(@field:NotBlank val name: String)` — without `@field:` validation is ignored |
+| open class for JPA | `open class MyEntity(...)` or rely on all-open plugin for `@Entity` |
+| Type-safe config | `@ConfigurationProperties(prefix = "app")` bound to a data class |
 | Appropriate stereotype | `@Service` for business logic, `@Repository` for data, `@RestController` for HTTP |
 | Transaction scope | `@Transactional` on multi-step writes; `@Transactional(readOnly = true)` on reads |
-| Hide internals | Catch domain exceptions in `@RestControllerAdvice`; return problem details, not stack traces |
+| MockK for tests | `@MockkBean` in Spring tests, `mockk<Type>()` or `@MockK` in unit tests |
+| Hide internals | Catch domain exceptions in `@RestControllerAdvice`; return problem details |
 | Externalize secrets | Use environment variables or Spring Cloud Config — never `application.properties` |
 
 ### MUST NOT DO
+- Use `!!` operator (use `?.`, `?:`, `requireNotNull()` instead)
+- Use `data class` for JPA entities (Hibernate proxy / equals / hashCode issues)
+- Omit `@field:` on validation annotations in data class constructor params
 - Use field injection (`@Autowired` on fields)
 - Skip input validation on API endpoints
-- Use `@Component` when `@Service`/`@Repository`/`@Controller` applies
-- Mix blocking and reactive code (e.g., calling `.block()` inside a WebFlux chain)
-- Store secrets or credentials in `application.properties`/`application.yml`
-- Hardcode URLs, credentials, or environment-specific values
 - Use deprecated Spring Boot 2.x patterns (e.g., `WebSecurityConfigurerAdapter`)
+- Call blocking APIs from coroutine context without `Dispatchers.IO`
+- Use `@MockBean` with Mockito in Kotlin tests — use `@MockkBean` (SpringMockK)

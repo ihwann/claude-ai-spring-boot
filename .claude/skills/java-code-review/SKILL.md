@@ -1,11 +1,11 @@
 ---
 name: java-code-review
-description: Systematic code review for Java with null safety, exception handling, concurrency, and performance checks. Use when user says "review code", "check this PR", "code review", or before merging changes.
+description: Systematic code review for Kotlin/Spring Boot with null safety, !! operator detection, data class JPA misuse, @field: annotation targets, coroutine usage, and performance checks. Use when user says "review code", "check this PR", "code review", or before merging changes.
 ---
 
-# Java Code Review Skill
+# Kotlin Code Review Skill
 
-Systematic code review checklist for Java projects.
+Systematic code review checklist for Kotlin/Spring Boot projects.
 
 ## When to Use
 - User says "review this code" / "check this PR" / "code review"
@@ -40,341 +40,270 @@ Systematic code review checklist for Java projects.
 
 ## Review Checklist
 
-### 1. Null Safety
+### 1. Kotlin Null Safety
 
-**Check for:**
-```java
-// ❌ NPE risk
-String name = user.getName().toUpperCase();
+**Check for `!!` operator usage:**
+```kotlin
+// ❌ CRITICAL: !! can throw NullPointerException at runtime
+val name = user.name!!.uppercase()
 
-// ✅ Safe
-String name = Optional.ofNullable(user.getName())
-    .map(String::toUpperCase)
-    .orElse("");
-
-// ✅ Also safe (early return)
-if (user.getName() == null) {
-    return "";
-}
-return user.getName().toUpperCase();
+// ✅ Safe alternatives
+val name = user.name?.uppercase() ?: ""           // Elvis operator
+val name = user.name?.uppercase() ?: return       // early return
+val name = requireNotNull(user.name) { "name must not be null" }  // explicit error
 ```
 
 **Flags:**
-- Chained method calls without null checks
-- Missing `@Nullable` / `@NonNull` annotations on public APIs
+- Any `!!` usage — always flag as Critical or High
+- Chained `?.` that eventually force-unwrap
 - `Optional.get()` without `isPresent()` check
-- Returning `null` from methods that could return `Optional` or empty collection
 
 **Suggest:**
-- Use `Optional` for return types that may be absent
-- Use `Objects.requireNonNull()` for constructor/method params
-- Return empty collections instead of null: `Collections.emptyList()`
+- Use `?.` (safe call) + `?:` (Elvis) for nullable values
+- Use `let`, `run`, `also` for scoped null checks
+- Return early or throw descriptive exception instead of `!!`
 
-### 2. Exception Handling
+### 2. JPA Entity Design (Kotlin-specific)
 
-**Check for:**
-```java
-// ❌ Swallowing exceptions
-try {
-    process();
-} catch (Exception e) {
-    // silently ignored
+**Check for `data class` used as JPA entity:**
+```kotlin
+// ❌ CRITICAL: data class breaks Hibernate proxies
+@Entity
+data class User(
+    @Id @GeneratedValue val id: Long = 0,
+    var email: String = ""
+)
+
+// ✅ Must use open class
+@Entity
+open class User(
+    @Id @GeneratedValue open val id: Long = 0,
+    open var email: String = ""
+)
+```
+
+**Check for missing `@field:` targets:**
+```kotlin
+// ❌ HIGH: validation annotation silently ignored
+data class CreateUserRequest(
+    @NotBlank val email: String  // ← target is PARAMETER, not FIELD → never validated
+)
+
+// ✅ @field: target ensures validation runs
+data class CreateUserRequest(
+    @field:NotBlank val email: String
+)
+```
+
+**Flags:**
+- `data class` with `@Entity` annotation — Critical
+- Validation annotations on data class params without `@field:` — High
+- `toString()` in entity that includes lazy collections — High (triggers lazy load)
+- Missing `override` on entity properties when using inheritance
+
+### 3. Coroutine Usage
+
+**Check for blocking calls in suspend context:**
+```kotlin
+// ❌ HIGH: blocking in coroutine starves thread pool
+suspend fun getUser(id: Long): User {
+    Thread.sleep(1000)              // ← blocks coroutine thread
+    return repository.findById(id).orElseThrow()  // ← JPA is blocking
 }
 
-// ❌ Catching too broad
-catch (Exception e) { }
-catch (Throwable t) { }
+// ✅ Use Dispatchers.IO for blocking operations
+suspend fun getUser(id: Long): User = withContext(Dispatchers.IO) {
+    repository.findById(id).orElseThrow()
+}
+```
+
+**Check for `.block()` calls inside coroutines or WebFlux chains:**
+```kotlin
+// ❌ CRITICAL: .block() inside reactive context causes deadlock
+fun Mono<User>.getBlocking(): User = this.block()!!  // never do this in reactive context
+```
+
+**Flags:**
+- `Thread.sleep()`, `Thread.join()` inside `suspend fun`
+- `.block()` called inside coroutine or reactive context
+- Missing `withContext(Dispatchers.IO)` around JPA/JDBC calls
+- Coroutine scope leaks (not using `coroutineScope { }` or structured concurrency)
+- `runBlocking` in production code (acceptable only in tests and main)
+
+### 4. Scope Functions Misuse
+
+```kotlin
+// ❌ MEDIUM: chained scope functions reduce readability
+val result = user
+    .let { it.copy() }
+    .also { log.info("user: $it") }
+    .run { this.email.uppercase() }
+    .let { email -> "$email processed" }
+
+// ✅ Flat, readable code
+log.info("user: $user")
+val result = "${user.email.uppercase()} processed"
+
+// ✅ Appropriate let usage — single nullable chain
+val name = user?.name?.let { it.trim().takeIf { it.isNotEmpty() } } ?: "Anonymous"
+```
+
+**Scope function guidelines:**
+| Function | Use when |
+|----------|---------|
+| `let` | Nullable check, transform result |
+| `apply` | Configure object after creation |
+| `also` | Side effects (logging) without transforming |
+| `run` | Execute block with receiver, return result |
+| `with` | Multiple operations on non-null receiver |
+
+### 5. Exception Handling
+
+```kotlin
+// ❌ Swallowing exceptions
+try {
+    process()
+} catch (e: Exception) {
+    // silently ignored — Critical
+}
 
 // ❌ Losing stack trace
-catch (IOException e) {
-    throw new RuntimeException(e.getMessage());
+catch (e: IOException) {
+    throw RuntimeException(e.message)  // ← loses original stack trace
 }
 
 // ✅ Proper handling
-catch (IOException e) {
-    log.error("Failed to process file: {}", filename, e);
-    throw new ProcessingException("File processing failed", e);
+catch (e: IOException) {
+    log.error("Failed to process file: {}", filename, e)
+    throw ProcessingException("File processing failed", e)
 }
 ```
 
-**Flags:**
-- Empty catch blocks
-- Catching `Exception` or `Throwable` broadly
-- Losing original exception (not chaining)
-- Using exceptions for flow control
-- Checked exceptions leaking through API boundaries
+**Kotlin-specific flags:**
+- Catching `Exception` or `Throwable` too broadly
+- Throwing exceptions from coroutines without propagating to CoroutineExceptionHandler
+- Using exceptions for flow control in coroutines (prefer sealed class Result)
 
-**Suggest:**
-- Log with context AND stack trace
-- Use specific exception types
-- Chain exceptions with `cause`
-- Consider custom exceptions for domain errors
+### 6. Collections & Immutability
 
-### 3. Collections & Streams
-
-**Check for:**
-```java
-// ❌ Modifying while iterating
-for (Item item : items) {
-    if (item.isExpired()) {
-        items.remove(item);  // ConcurrentModificationException
-    }
+```kotlin
+// ❌ Mutating while iterating
+for (item in items) {
+    if (item.isExpired()) items.remove(item)  // ConcurrentModificationException
 }
 
-// ✅ Use removeIf
-items.removeIf(Item::isExpired);
+// ✅ Use removeIf or filter
+items.removeIf { it.isExpired() }
+val activeItems = items.filter { !it.isExpired() }
 
-// ❌ Stream for simple operations
-list.stream().forEach(System.out::println);
-
-// ✅ Simple loop is cleaner
-for (Item item : list) {
-    System.out.println(item);
+// ❌ Exposing mutable collection from API
+class Service {
+    private val _items = mutableListOf<Item>()
+    fun getItems(): MutableList<Item> = _items  // ← caller can mutate
 }
 
-// ❌ Collecting to modify
-List<String> names = users.stream()
-    .map(User::getName)
-    .collect(Collectors.toList());
-names.add("extra");  // Might be immutable!
-
-// ✅ Explicit mutable list
-List<String> names = users.stream()
-    .map(User::getName)
-    .collect(Collectors.toCollection(ArrayList::new));
+// ✅ Return immutable view
+fun getItems(): List<Item> = _items.toList()
 ```
 
 **Flags:**
 - Modifying collections during iteration
-- Overusing streams for simple operations
-- Assuming `Collectors.toList()` returns mutable list
-- Not using `List.of()`, `Set.of()`, `Map.of()` for immutable collections
-- Parallel streams without understanding implications
+- Returning `MutableList`/`MutableMap` from public APIs
+- `toMutableList()` on results of `findAll()` when mutation not needed
 
-**Suggest:**
-- `List.copyOf()` for defensive copies
-- `removeIf()` instead of iterator removal
-- Streams for transformations, loops for side effects
+### 7. Spring-Specific Patterns
 
-### 4. Concurrency
-
-**Check for:**
-```java
-// ❌ Not thread-safe
-private Map<String, User> cache = new HashMap<>();
-
-// ✅ Thread-safe
-private Map<String, User> cache = new ConcurrentHashMap<>();
-
-// ❌ Check-then-act race condition
-if (!map.containsKey(key)) {
-    map.put(key, computeValue());
+```kotlin
+// ❌ Field injection (breaks testability)
+@Service
+class UserService {
+    @Autowired
+    private lateinit var userRepository: UserRepository
 }
 
-// ✅ Atomic operation
-map.computeIfAbsent(key, k -> computeValue());
+// ✅ Constructor injection
+@Service
+class UserService(private val userRepository: UserRepository)
 
-// ❌ Double-checked locking (broken without volatile)
-if (instance == null) {
-    synchronized(this) {
-        if (instance == null) {
-            instance = new Instance();
-        }
+// ❌ Missing @Transactional on write operations
+@Service
+class OrderService(private val repo: OrderRepository) {
+    fun createOrder(request: CreateOrderRequest): Order {
+        val order = repo.save(Order(...))
+        sendNotification(order)  // if this throws, save is NOT rolled back
+        return order
     }
 }
+
+// ✅ @Transactional wraps both operations
+@Transactional
+fun createOrder(request: CreateOrderRequest): Order { ... }
 ```
 
 **Flags:**
-- Shared mutable state without synchronization
-- Check-then-act patterns without atomicity
-- Missing `volatile` on shared variables
-- Synchronized on non-final objects
-- Thread-unsafe lazy initialization
+- Field injection with `@Autowired` — use constructor injection
+- Missing `@Transactional` on multi-step write operations
+- `@Transactional` on private methods (Spring AOP cannot intercept)
+- `@Transactional` self-invocation (calling from same class bypasses AOP)
 
-**Suggest:**
-- Prefer immutable objects
-- Use `java.util.concurrent` classes
-- `AtomicReference`, `AtomicInteger` for simple cases
-- Consider `@ThreadSafe` / `@NotThreadSafe` annotations
+### 8. Concurrency & Thread Safety
 
-### 5. Java Idioms
-
-**equals/hashCode:**
-```java
-// ❌ Only equals without hashCode
-@Override
-public boolean equals(Object o) { ... }
-// Missing hashCode!
-
-// ❌ Mutable fields in hashCode
-@Override
-public int hashCode() {
-    return Objects.hash(id, mutableField);  // Breaks HashMap
+```kotlin
+// ❌ Non-thread-safe mutable state in singleton
+@Service
+class CacheService {
+    private val cache = HashMap<String, User>()  // ← not thread-safe
 }
 
-// ✅ Use immutable fields, implement both
-@Override
-public boolean equals(Object o) {
-    if (this == o) return true;
-    if (!(o instanceof User user)) return false;
-    return Objects.equals(id, user.id);
+// ✅ Thread-safe
+@Service
+class CacheService {
+    private val cache = ConcurrentHashMap<String, User>()
 }
 
-@Override
-public int hashCode() {
-    return Objects.hash(id);
-}
+// ✅ Or use atomic operations
+private val count = AtomicLong(0)
 ```
 
-**toString:**
-```java
-// ❌ Missing - hard to debug
-// No toString()
+### 9. Performance
 
-// ❌ Including sensitive data
-return "User{password='" + password + "'}";
-
-// ✅ Useful for debugging
-@Override
-public String toString() {
-    return "User{id=" + id + ", name='" + name + "'}";
-}
-```
-
-**Builders:**
-```java
-// ✅ For classes with many optional parameters
-User user = User.builder()
-    .name("John")
-    .email("john@example.com")
-    .build();
-```
-
-**Flags:**
-- `equals` without `hashCode`
-- Mutable fields in `hashCode`
-- Missing `toString` on domain objects
-- Constructors with > 3-4 parameters (suggest builder)
-- Not using `instanceof` pattern matching (Java 16+)
-
-### 6. Resource Management
-
-**Check for:**
-```java
-// ❌ Resource leak
-FileInputStream fis = new FileInputStream(file);
-// ... might throw before close
-
-// ✅ Try-with-resources
-try (FileInputStream fis = new FileInputStream(file)) {
-    // ...
-}
-
-// ❌ Multiple resources, wrong order
-try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {
-    // FileWriter might not be closed if BufferedWriter fails
-}
-
-// ✅ Separate declarations
-try (FileWriter fw = new FileWriter(file);
-     BufferedWriter writer = new BufferedWriter(fw)) {
-    // Both properly closed
-}
-```
-
-**Flags:**
-- Not using try-with-resources for `Closeable`/`AutoCloseable`
-- Resources opened but not in try-with-resources
-- Database connections/statements not properly closed
-
-### 7. API Design
-
-**Check for:**
-```java
-// ❌ Boolean parameters
-process(data, true, false);  // What do these mean?
-
-// ✅ Use enums or builder
-process(data, ProcessMode.ASYNC, ErrorHandling.STRICT);
-
-// ❌ Returning null for "not found"
-public User findById(Long id) {
-    return users.get(id);  // null if not found
-}
-
-// ✅ Return Optional
-public Optional<User> findById(Long id) {
-    return Optional.ofNullable(users.get(id));
-}
-
-// ❌ Accepting null collections
-public void process(List<Item> items) {
-    if (items == null) items = Collections.emptyList();
-}
-
-// ✅ Require non-null, accept empty
-public void process(List<Item> items) {
-    Objects.requireNonNull(items, "items must not be null");
-}
-```
-
-**Flags:**
-- Boolean parameters (prefer enums)
-- Methods with > 3 parameters (consider parameter object)
-- Inconsistent null handling across similar methods
-- Missing validation on public API inputs
-
-### 8. Performance Considerations
-
-**Check for:**
-```java
+```kotlin
 // ❌ String concatenation in loop
-String result = "";
-for (String s : strings) {
-    result += s;  // Creates new String each iteration
+var result = ""
+for (s in strings) { result += s }  // O(n²)
+
+// ✅ StringBuilder or joinToString
+val result = strings.joinToString("")
+
+// ❌ N+1 in loop
+for (user in users) {
+    val orders = orderRepo.findByUserId(user.id)  // N queries!
 }
 
-// ✅ StringBuilder
-StringBuilder sb = new StringBuilder();
-for (String s : strings) {
-    sb.append(s);
-}
-
-// ❌ Regex compilation in loop
-for (String line : lines) {
-    if (line.matches("pattern.*")) { }  // Compiles regex each time
-}
-
-// ✅ Pre-compiled pattern
-private static final Pattern PATTERN = Pattern.compile("pattern.*");
-for (String line : lines) {
-    if (PATTERN.matcher(line).matches()) { }
-}
-
-// ❌ N+1 in loops
-for (User user : users) {
-    List<Order> orders = orderRepo.findByUserId(user.getId());
-}
-
-// ✅ Batch fetch
-Map<Long, List<Order>> ordersByUser = orderRepo.findByUserIds(userIds);
+// ✅ Fetch all at once
+val ordersByUser = orderRepo.findByUserIdIn(userIds).groupBy { it.userId }
 ```
 
-**Flags:**
-- String concatenation in loops
-- Regex compilation in loops
-- N+1 query patterns
-- Creating objects in tight loops that could be reused
-- Not using primitive streams (`IntStream`, `LongStream`)
+### 10. Data Class Design
 
-### 9. Testing Hints
+```kotlin
+// ❌ data class with too many fields (violation of single responsibility)
+data class UserResponse(
+    val id: Long, val name: String, val email: String,
+    val address: String, val city: String, val country: String,
+    val orderCount: Int, val lastLoginAt: LocalDateTime,
+    val createdAt: LocalDateTime, val roles: List<String>
+)
 
-**Suggest tests for:**
-- Null inputs
-- Empty collections
-- Boundary values
-- Exception cases
-- Concurrent access (if applicable)
+// ✅ Nested data classes for logical grouping
+data class UserResponse(
+    val id: Long,
+    val name: String,
+    val email: String,
+    val address: AddressResponse,
+    val stats: UserStatsResponse
+)
+```
 
 ---
 
@@ -382,27 +311,20 @@ Map<Long, List<Order>> ordersByUser = orderRepo.findByUserIds(userIds);
 
 | Severity | Criteria |
 |----------|----------|
-| **Critical** | Security vulnerability, data loss risk, production crash |
-| **High** | Bug likely, significant performance issue, breaks API contract |
-| **Medium** | Code smell, maintainability issue, missing best practice |
-| **Low** | Style, minor optimization, suggestion |
-
-## Token Optimization
-
-- Focus on changed lines (use `git diff`)
-- Don't repeat obvious issues - group similar findings
-- Reference line numbers, not full code quotes
-- Skip files that are auto-generated or test fixtures
+| **Critical** | `!!` operator, `data class` as JPA entity, security vulnerability, data loss risk |
+| **High** | Missing `@field:` validation, blocking in coroutine, N+1 query, `@Transactional` missing |
+| **Medium** | Scope function misuse, exception swallowing, non-thread-safe shared state |
+| **Low** | Style, naming, minor optimization, missing KDoc on public API |
 
 ## Quick Reference Card
 
 | Category | Key Checks |
 |----------|------------|
-| Null Safety | Chained calls, Optional misuse, null returns |
+| Null Safety | `!!` usage, unhandled nullable, `?.let { }` patterns |
+| JPA Kotlin | `data class @Entity`, missing `@field:`, lazy `toString()` |
+| Coroutines | Blocking in `suspend`, `.block()`, missing `Dispatchers.IO` |
+| Scope Functions | Overuse of `let`/`run`/`also`/`apply`, readability |
 | Exceptions | Empty catch, broad catch, lost stack trace |
-| Collections | Modification during iteration, stream vs loop |
-| Concurrency | Shared mutable state, check-then-act |
-| Idioms | equals/hashCode pair, toString, builders |
-| Resources | try-with-resources, connection leaks |
-| API | Boolean params, null handling, validation |
-| Performance | String concat, regex in loop, N+1 |
+| Collections | Mutation during iteration, exposing mutable from API |
+| Spring | Field injection, `@Transactional` on private/self-invoked |
+| Performance | String concat in loop, N+1 queries |

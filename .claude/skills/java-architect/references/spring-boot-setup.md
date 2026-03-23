@@ -1,16 +1,16 @@
-# Spring Boot Setup
+# Spring Boot Setup (Kotlin)
 
 ## Project Structure (Clean Architecture)
 
 ```
-src/main/java/com/example/
+src/main/kotlin/pl/piomin/services/
 ├── domain/              # Core business logic
-│   ├── model/          # Entities, value objects
+│   ├── model/          # Entities (open class), value objects
 │   ├── repository/     # Repository interfaces
 │   └── service/        # Domain services
 ├── application/         # Use cases
-│   ├── dto/            # Request/Response DTOs
-│   ├── mapper/         # Entity <-> DTO mappers
+│   ├── dto/            # Request/Response DTOs (data class)
+│   ├── mapper/         # Entity <-> DTO mappers / companion factories
 │   └── service/        # Application services
 ├── infrastructure/      # External concerns
 │   ├── persistence/    # JPA implementations
@@ -20,7 +20,7 @@ src/main/java/com/example/
     └── rest/           # REST controllers
 ```
 
-## Modern pom.xml (Spring Boot 4.0)
+## Kotlin pom.xml (Spring Boot 3.x)
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,21 +30,36 @@ src/main/java/com/example/
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.0.3</version>
+        <version>3.5.0</version>
     </parent>
 
-    <groupId>com.example</groupId>
-    <artifactId>demo-service</artifactId>
+    <groupId>pl.piomin.services</groupId>
+    <artifactId>my-service</artifactId>
     <version>1.0.0</version>
-    <packaging>jar</packaging>
 
     <properties>
         <java.version>21</java.version>
-        <mapstruct.version>1.5.5.Final</mapstruct.version>
-        <testcontainers.version>2.0.3</testcontainers.version>
+        <kotlin.version>2.1.0</kotlin.version>
+        <kotlin.compiler.incremental>true</kotlin.compiler.incremental>
+        <mockk.version>1.13.14</mockk.version>
+        <springmockk.version>4.0.2</springmockk.version>
     </properties>
 
     <dependencies>
+        <!-- Kotlin -->
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-reflect</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.module</groupId>
+            <artifactId>jackson-module-kotlin</artifactId>
+        </dependency>
+
         <!-- Spring Boot Starters -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -69,53 +84,106 @@ src/main/java/com/example/
             <artifactId>flyway-core</artifactId>
         </dependency>
 
-        <!-- Mappers -->
-        <dependency>
-            <groupId>org.mapstruct</groupId>
-            <artifactId>mapstruct</artifactId>
-            <version>${mapstruct.version}</version>
-        </dependency>
-
         <!-- Testing -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.mockito</groupId>
+                    <artifactId>mockito-core</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-testcontainers</artifactId>
+            <groupId>io.mockk</groupId>
+            <artifactId>mockk-jvm</artifactId>
+            <version>${mockk.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers-postgresql</artifactId>
+            <groupId>com.ninja-squad</groupId>
+            <artifactId>springmockk</artifactId>
+            <version>${springmockk.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
 
     <build>
+        <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
+        <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
+
         <plugins>
+            <!-- Kotlin compiler — must run before maven-compiler-plugin -->
             <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <version>${kotlin.version}</version>
+                <configuration>
+                    <args>
+                        <arg>-Xjsr305=strict</arg>
+                    </args>
+                    <compilerPlugins>
+                        <!-- all-open: makes @Component, @Service, @Entity etc. open -->
+                        <plugin>spring</plugin>
+                        <!-- no-arg: zero-arg constructor for @Entity, @Embeddable -->
+                        <plugin>jpa</plugin>
+                    </compilerPlugins>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.jetbrains.kotlin</groupId>
+                        <artifactId>kotlin-maven-allopen</artifactId>
+                        <version>${kotlin.version}</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>org.jetbrains.kotlin</groupId>
+                        <artifactId>kotlin-maven-noarg</artifactId>
+                        <version>${kotlin.version}</version>
+                    </dependency>
+                </dependencies>
+                <executions>
+                    <execution>
+                        <id>compile</id>
+                        <goals><goal>compile</goal></goals>
+                        <configuration>
+                            <sourceDirs>
+                                <sourceDir>${project.basedir}/src/main/kotlin</sourceDir>
+                            </sourceDirs>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>test-compile</id>
+                        <goals><goal>test-compile</goal></goals>
+                        <configuration>
+                            <sourceDirs>
+                                <sourceDir>${project.basedir}/src/test/kotlin</sourceDir>
+                            </sourceDirs>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
+
+            <!-- Disable default maven-compiler-plugin phases -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <configuration>
-                    <annotationProcessorPaths>
-                        <path>
-                            <groupId>org.mapstruct</groupId>
-                            <artifactId>mapstruct-processor</artifactId>
-                            <version>${mapstruct.version}</version>
-                        </path>
-                        <path>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                        </path>
-                    </annotationProcessorPaths>
-                </configuration>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <phase>none</phase>
+                    </execution>
+                    <execution>
+                        <id>default-testCompile</id>
+                        <phase>none</phase>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
         </plugins>
     </build>
@@ -128,12 +196,12 @@ src/main/java/com/example/
 # application.yml
 spring:
   application:
-    name: demo-service
+    name: my-service
 
   datasource:
-    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/demo}
-    username: ${DATABASE_USER:demo}
-    password: ${DATABASE_PASSWORD:demo}
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/mydb}
+    username: ${DATABASE_USER:myuser}
+    password: ${DATABASE_PASSWORD:mypassword}
     hikari:
       maximum-pool-size: 10
       minimum-idle: 5
@@ -142,7 +210,7 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate
-    open-in-view: false
+    open-in-view: false     # Always disable — prevents lazy loading outside transaction
     properties:
       hibernate:
         jdbc:
@@ -158,9 +226,6 @@ spring:
 server:
   port: 8080
   shutdown: graceful
-  error:
-    include-message: always
-    include-binding-errors: always
 
 management:
   endpoints:
@@ -170,105 +235,89 @@ management:
   endpoint:
     health:
       show-details: when-authorized
-  metrics:
-    export:
-      prometheus:
-        enabled: true
 ```
 
 ## Main Application Class
 
-```java
-package com.example;
+```kotlin
+package pl.piomin.services
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
+import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.runApplication
+import org.springframework.data.jpa.repository.config.EnableJpaAuditing
 
 @SpringBootApplication
 @EnableJpaAuditing
-public class DemoServiceApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(DemoServiceApplication.class, args);
-    }
+class MyServiceApplication  // No main function in the class — use top-level function
+
+fun main(args: Array<String>) {
+    runApplication<MyServiceApplication>(*args)
 }
 ```
 
-## Configuration Classes
+## Configuration Classes (Kotlin style)
 
-```java
-package com.example.infrastructure.config;
+```kotlin
+package pl.piomin.services.infrastructure.config
 
-import io.swagger.v3.oas.models.OpenAPI;
-import io.swagger.v3.oas.models.info.Info;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import io.swagger.v3.oas.models.OpenAPI
+import io.swagger.v3.oas.models.info.Info
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
 
 @Configuration
-public class OpenApiConfig {
+class OpenApiConfig {
 
     @Bean
-    public OpenAPI customOpenAPI() {
-        return new OpenAPI()
-            .info(new Info()
-                .title("Demo Service API")
+    fun customOpenAPI(): OpenAPI = OpenAPI()
+        .info(
+            Info()
+                .title("My Service API")
                 .version("1.0.0")
-                .description("Enterprise microservice API"));
-    }
+                .description("Enterprise Kotlin microservice API")
+        )
 }
 ```
 
-## Exception Handling
+## Exception Handling (ProblemDetail)
 
-```java
-package com.example.infrastructure.config;
+```kotlin
+package pl.piomin.services.infrastructure.config
 
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ProblemDetail;
-import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
-
-import java.time.Instant;
+import org.springframework.http.HttpStatus
+import org.springframework.http.ProblemDetail
+import org.springframework.web.bind.MethodArgumentNotValidException
+import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.RestControllerAdvice
+import java.time.Instant
 
 @RestControllerAdvice
-public class GlobalExceptionHandler {
+class GlobalExceptionHandler {
 
-    @ExceptionHandler(EntityNotFoundException.class)
-    public ProblemDetail handleNotFound(EntityNotFoundException ex) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
-            HttpStatus.NOT_FOUND,
-            ex.getMessage()
-        );
-        problem.setProperty("timestamp", Instant.now());
-        return problem;
-    }
+    @ExceptionHandler(EntityNotFoundException::class)
+    fun handleNotFound(ex: EntityNotFoundException): ProblemDetail =
+        ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.message ?: "Not found")
+            .also { it.setProperty("timestamp", Instant.now()) }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ProblemDetail handleValidation(MethodArgumentNotValidException ex) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
-            HttpStatus.BAD_REQUEST,
-            "Validation failed"
-        );
-        problem.setProperty("errors", ex.getBindingResult()
-            .getFieldErrors()
-            .stream()
-            .map(e -> e.getField() + ": " + e.getDefaultMessage())
-            .toList());
-        return problem;
-    }
+    @ExceptionHandler(MethodArgumentNotValidException::class)
+    fun handleValidation(ex: MethodArgumentNotValidException): ProblemDetail =
+        ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Validation failed").also { problem ->
+            problem.setProperty("errors", ex.bindingResult.fieldErrors
+                .map { "${it.field}: ${it.defaultMessage}" })
+        }
 }
 ```
 
 ## Quick Reference
 
-| Component | Purpose |
-|-----------|---------|
-| `@SpringBootApplication` | Main application entry point |
-| `@Configuration` | Configuration classes |
-| `@Bean` | Bean factory method |
-| `@Value` | Inject properties |
-| `@ConfigurationProperties` | Type-safe config |
+| Component | Kotlin Pattern |
+|-----------|--------------|
+| `@SpringBootApplication` | Main class (no `main` inside) + top-level `fun main` |
+| `@Configuration` | Regular class |
+| `@Bean` | Extension or method |
+| `@Value` | Constructor param with default |
+| `@ConfigurationProperties` | `data class` preferred |
 | `@Profile` | Environment-specific beans |
 | `@EnableJpaAuditing` | Automatic audit fields |
 | `ProblemDetail` | RFC 7807 error responses |
+| `runApplication<App>(*args)` | Entry point — Kotlin idiomatic |

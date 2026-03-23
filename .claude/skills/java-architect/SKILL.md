@@ -1,30 +1,30 @@
 ---
 name: java-architect
-description: Use when building, configuring, or debugging enterprise Java applications with Spring Boot 3.x, microservices, or reactive programming. Invoke to implement WebFlux endpoints, optimize JPA queries and database performance, configure Spring Security with OAuth2/JWT, or resolve authentication issues and async processing challenges in cloud-native Spring applications.
+description: Use when building, configuring, or debugging enterprise Kotlin/Spring Boot applications with Spring Boot 3.x, microservices, or coroutine-based async programming. Invoke to implement coroutine endpoints, optimize JPA queries with open class entities, configure Spring Security Kotlin DSL with OAuth2/JWT, or resolve authentication issues and async processing challenges in cloud-native Kotlin Spring applications.
 license: MIT
 metadata:
   author: https://github.com/Jeffallan
-  version: "1.1.0"
+  version: "2.0.0"
   domain: language
-  triggers: Spring Boot, Java, microservices, Spring Cloud, JPA, Hibernate, WebFlux, reactive, Java Enterprise
+  triggers: Spring Boot, Kotlin, microservices, Spring Cloud, JPA, Hibernate, WebFlux, coroutines, Kotlin Enterprise
   role: architect
   scope: implementation
   output-format: code
-  related-skills: fullstack-guardian, api-designer, devops-engineer, database-optimizer
+  related-skills: kotlin-architect, api-designer, devops-engineer, database-optimizer
 ---
 
-# Java Architect
+# Kotlin Architect
 
-Enterprise Java specialist focused on Spring Boot 3.x, microservices architecture, and cloud-native development using Java 21 LTS.
+Enterprise Kotlin specialist focused on Spring Boot 3.x, microservices architecture, and cloud-native development using Kotlin 2.x + JVM 21.
 
 ## Core Workflow
 
-1. **Architecture analysis** - Review project structure, dependencies, Spring config
-2. **Domain design** - Create models following DDD and Clean Architecture; verify domain boundaries before proceeding. If boundaries are unclear, resolve ambiguities before moving to implementation.
-3. **Implementation** - Build services with Spring Boot best practices
-4. **Data layer** - Optimize JPA queries, implement repositories; run `./mvnw verify -pl <module>` to confirm query correctness. If integration tests fail: review Hibernate SQL logs, fix queries or mappings, re-run before proceeding.
-5. **Security & config** - Apply Spring Security, externalize configuration, add observability; run `./mvnw verify` after security changes to confirm filter chain and JWT wiring. If tests fail: check `SecurityFilterChain` bean order and token validation config, then re-run.
-6. **Quality assurance** - Run `./mvnw verify` (Maven) or `./gradlew check` (Gradle) to confirm all tests pass and coverage reaches 85%+ before closing. If coverage is below threshold: identify untested branches via JaCoCo report (`target/site/jacoco/index.html`), add missing test cases, re-run.
+1. **Architecture analysis** - Review project structure, dependencies, Spring config, Kotlin compiler plugins
+2. **Domain design** - Create models following DDD and Clean Architecture; use open class for entities, data class for DTOs
+3. **Implementation** - Build services with Spring Boot best practices and Kotlin idioms
+4. **Data layer** - Optimize JPA queries, implement repositories; run `./mvnw verify -pl <module>` to confirm query correctness
+5. **Security & config** - Apply Spring Security Kotlin DSL, externalize configuration, add observability
+6. **Quality assurance** - Run `./mvnw verify` to confirm all tests pass and coverage reaches 85%+ before closing
 
 ## Reference Guide
 
@@ -32,101 +32,177 @@ Load detailed guidance based on context:
 
 | Topic | Reference | Load When |
 |-------|-----------|-----------|
-| Spring Boot | `references/spring-boot-setup.md` | Project setup, configuration, starters |
-| Reactive | `references/reactive-webflux.md` | WebFlux, Project Reactor, R2DBC |
-| Data Access | `references/jpa-optimization.md` | JPA, Hibernate, query tuning |
-| Security | `references/spring-security.md` | OAuth2, JWT, method security |
-| Testing | `references/testing-patterns.md` | JUnit 5, TestContainers, Mockito |
+| Spring Boot | `references/spring-boot-setup.md` | Project setup, Kotlin configuration, starters |
+| Reactive/Async | `references/reactive-webflux.md` | Coroutines, WebFlux, Flow, R2DBC |
+| Data Access | `references/jpa-optimization.md` | JPA, Hibernate, open class entities, query tuning |
+| Security | `references/spring-security.md` | OAuth2, JWT, Kotlin DSL SecurityFilterChain |
+| Testing | `references/testing-patterns.md` | JUnit 5, TestContainers, MockK |
 
 ## Constraints
 
 ### MUST DO
-- Use Java 21 LTS features (records, sealed classes, pattern matching)
+- Use Kotlin 2.x idioms (data class, sealed class, extension functions, coroutines)
+- Use open class for JPA entities (or rely on all-open plugin for @Entity)
+- Use @field: annotation target for validation on data class constructor params
 - Apply database migrations (Flyway/Liquibase)
 - Document APIs with OpenAPI/Swagger
-- Use proper exception handling hierarchy
+- Use proper exception handling hierarchy (sealed class Result or ProblemDetail)
 - Externalize all configuration (never hardcode values)
+- Use MockK (not Mockito) for all test mocking
 
 ### MUST NOT DO
+- Use `!!` operator — redesign null handling instead
+- Use `data class` for JPA entities
 - Use deprecated Spring APIs
 - Skip input validation
 - Store sensitive data unencrypted
-- Use blocking code in reactive applications
+- Call blocking APIs from coroutine context without Dispatchers.IO
 - Ignore transaction boundaries
 
 ## Output Templates
 
-When implementing Java features, provide:
-1. Domain models (entities, DTOs, records)
-2. Service layer (business logic, transactions)
+When implementing Kotlin features, provide:
+1. Domain models (open class entities, data class DTOs)
+2. Service layer (business logic, transactions, suspend fun where async)
 3. Repository interfaces (Spring Data)
 4. Controller/REST endpoints
-5. Test classes with comprehensive coverage
+5. Test classes with MockK (comprehensive coverage)
 6. Brief explanation of architectural decisions
 
 ## Code Examples
 
-### Minimal WebFlux REST Endpoint
+### Coroutine-based REST Controller
 
-```java
+```kotlin
 @RestController
 @RequestMapping("/api/v1/orders")
-@RequiredArgsConstructor
-public class OrderController {
-
-    private final OrderService orderService;
+class OrderController(private val orderService: OrderService) {
 
     @GetMapping("/{id}")
-    public Mono<ResponseEntity<OrderDto>> getOrder(@PathVariable UUID id) {
-        return orderService.findById(id)
-                .map(ResponseEntity::ok)
-                .defaultIfEmpty(ResponseEntity.notFound().build());
-    }
+    suspend fun getOrder(@PathVariable id: UUID): ResponseEntity<OrderDto> =
+        orderService.findById(id)
+            ?.let { ResponseEntity.ok(it) }
+            ?: ResponseEntity.notFound().build()
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<OrderDto> createOrder(@Valid @RequestBody CreateOrderRequest request) {
-        return orderService.create(request);
+    suspend fun createOrder(@Valid @RequestBody request: CreateOrderRequest): OrderDto =
+        orderService.create(request)
+
+    @GetMapping
+    fun getOrders(): Flow<OrderDto> = orderService.findAll()  // streaming
+}
+```
+
+### JPA Entity (open class — NOT data class)
+
+```kotlin
+@Entity
+@Table(name = "orders")
+open class Order(  // open required for Hibernate proxies (all-open plugin handles @Entity automatically)
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    open val id: UUID = UUID.randomUUID(),
+
+    @field:NotNull
+    open var customerId: UUID = UUID.randomUUID(),
+
+    @Enumerated(EnumType.STRING)
+    open var status: OrderStatus = OrderStatus.PENDING,
+
+    @Version
+    open var version: Long = 0,
+
+    @OneToMany(mappedBy = "order", cascade = [CascadeType.ALL], orphanRemoval = true)
+    open val items: MutableList<OrderItem> = mutableListOf()
+) {
+    // Business-key equals/hashCode (NOT auto-generated by data class)
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is Order) return false
+        return id == other.id
+    }
+    override fun hashCode(): Int = id.hashCode()
+
+    fun addItem(item: OrderItem) {
+        items.add(item)
+        item.order = this
     }
 }
 ```
 
 ### JPA Repository with Optimized Query
 
-```java
-public interface OrderRepository extends JpaRepository<Order, UUID> {
+```kotlin
+interface OrderRepository : JpaRepository<Order, UUID> {
 
     // Avoid N+1: fetch association in one query
     @Query("SELECT o FROM Order o JOIN FETCH o.items WHERE o.customerId = :customerId")
-    List<Order> findByCustomerIdWithItems(@Param("customerId") UUID customerId);
+    fun findByCustomerIdWithItems(@Param("customerId") customerId: UUID): List<Order>
 
     // Projection to limit fetched columns
-    @Query("SELECT new com.example.dto.OrderSummary(o.id, o.status, o.total) FROM Order o WHERE o.status = :status")
-    Page<OrderSummary> findSummariesByStatus(@Param("status") OrderStatus status, Pageable pageable);
+    @Query("SELECT new pl.piomin.services.dto.OrderSummary(o.id, o.status, o.total) FROM Order o WHERE o.status = :status")
+    fun findSummariesByStatus(@Param("status") status: OrderStatus, pageable: Pageable): Page<OrderSummary>
 }
 ```
 
-### Spring Security OAuth2 JWT Configuration
+### Spring Security Kotlin DSL
 
-```java
+```kotlin
 @Configuration
 @EnableMethodSecurity
-public class SecurityConfig {
+class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        return http
-                .csrf(AbstractHttpConfigurer::disable)
-                .sessionManagement(s -> s.sessionCreationPolicy(STATELESS))
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/health").permitAll()
-                        .anyRequest().authenticated())
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
-                .build();
+    fun filterChain(http: HttpSecurity): SecurityFilterChain = http {
+        csrf { disable() }
+        sessionManagement { sessionCreationPolicy = SessionCreationPolicy.STATELESS }
+        authorizeHttpRequests {
+            authorize("/actuator/health", permitAll)
+            authorize("/api/public/**", permitAll)
+            authorize(anyRequest, authenticated)
+        }
+        oauth2ResourceServer { jwt { } }
+    }.build()
+}
+```
+
+### Service Test with MockK
+
+```kotlin
+@ExtendWith(MockKExtension::class)
+@DisplayName("Order Service Tests")
+class OrderServiceTest {
+
+    @MockK
+    lateinit var orderRepository: OrderRepository
+
+    @InjectMockKs
+    lateinit var orderService: OrderService
+
+    @Test
+    fun `findById - existing order - returns order`() {
+        val order = Order(customerId = UUID.randomUUID())
+        every { orderRepository.findById(order.id) } returns Optional.of(order)
+
+        val result = orderService.findById(order.id)
+
+        assertThat(result).isNotNull
+        verify { orderRepository.findById(order.id) }
+        confirmVerified(orderRepository)
+    }
+
+    @Test
+    fun `findById - not found - returns null`() {
+        every { orderRepository.findById(any()) } returns Optional.empty()
+
+        val result = orderService.findById(UUID.randomUUID())
+
+        assertThat(result).isNull()
     }
 }
 ```
 
 ## Knowledge Reference
 
-Spring Boot 3.x, Java 21, Spring WebFlux, Project Reactor, Spring Data JPA, Spring Security, OAuth2/JWT, Hibernate, R2DBC, Spring Cloud, Resilience4j, Micrometer, JUnit 5, TestContainers, Mockito, Maven/Gradle
+Spring Boot 3.x, Kotlin 2.x, JVM 21, Coroutines, Flow, Spring WebFlux, Spring Data JPA, Spring Security Kotlin DSL, OAuth2/JWT, Hibernate (open class), R2DBC, Spring Cloud, Resilience4j, Micrometer, JUnit 5, TestContainers, MockK, Maven (kotlin-maven-plugin)

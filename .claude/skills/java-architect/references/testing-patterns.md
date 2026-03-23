@@ -1,494 +1,358 @@
-# Testing Patterns
+# Testing Patterns (Kotlin + MockK)
 
-## Unit Testing with JUnit 5
+## Unit Testing with JUnit 5 + MockK
 
-```java
-package com.example.application.service;
+```kotlin
+package pl.piomin.services.application.service
 
-import com.example.application.dto.UserRequest;
-import com.example.application.dto.UserResponse;
-import com.example.application.mapper.UserMapper;
-import com.example.domain.model.User;
-import com.example.domain.repository.UserRepository;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import io.mockk.*
+import io.mockk.impl.annotations.InjectMockKs
+import io.mockk.impl.annotations.MockK
+import io.mockk.junit5.MockKExtension
+import org.assertj.core.api.Assertions.*
+import org.junit.jupiter.api.*
+import org.junit.jupiter.api.extension.ExtendWith
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
+import java.util.Optional
 
-import java.util.Optional;
-
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-
-@ExtendWith(MockitoExtension.class)
+@ExtendWith(MockKExtension::class)
 @DisplayName("User Service Tests")
 class UserServiceTest {
 
-    @Mock
-    private UserRepository userRepository;
+    @MockK
+    lateinit var userRepository: UserRepository
 
-    @Mock
-    private UserMapper userMapper;
+    @InjectMockKs
+    lateinit var userService: UserService
 
-    @InjectMocks
-    private UserService userService;
-
-    private User testUser;
-    private UserRequest userRequest;
-    private UserResponse userResponse;
-
-    @BeforeEach
-    void setUp() {
-        testUser = User.builder()
-            .id(1L)
-            .email("test@example.com")
-            .username("testuser")
-            .active(true)
-            .build();
-
-        userRequest = new UserRequest("test@example.com", "testuser");
-        userResponse = new UserResponse(1L, "test@example.com", "testuser");
-    }
+    private val testUser = User(id = 1L, email = "test@example.com", name = "Test User")
+    private val userRequest = CreateUserRequest(email = "test@example.com", name = "Test User")
+    private val userResponse = UserResponse(id = 1L, email = "test@example.com", name = "Test User")
 
     @Test
     @DisplayName("Should find user by ID successfully")
-    void shouldFindUserById() {
+    fun `findById - existing user - returns response`() {
         // Given
-        when(userRepository.findById(1L)).thenReturn(Optional.of(testUser));
-        when(userMapper.toResponse(testUser)).thenReturn(userResponse);
+        every { userRepository.findById(1L) } returns Optional.of(testUser)
 
         // When
-        UserResponse result = userService.findById(1L);
+        val result = userService.findById(1L)
 
         // Then
-        assertThat(result).isNotNull();
-        assertThat(result.email()).isEqualTo("test@example.com");
-        verify(userRepository).findById(1L);
-        verify(userMapper).toResponse(testUser);
+        assertThat(result.email).isEqualTo("test@example.com")
+        verify { userRepository.findById(1L) }
+        confirmVerified(userRepository)  // ensures no unexpected interactions
     }
 
     @Test
     @DisplayName("Should throw exception when user not found")
-    void shouldThrowWhenUserNotFound() {
+    fun `findById - not found - throws EntityNotFoundException`() {
         // Given
-        when(userRepository.findById(anyLong())).thenReturn(Optional.empty());
+        every { userRepository.findById(any()) } returns Optional.empty()
 
         // When / Then
-        assertThatThrownBy(() -> userService.findById(999L))
-            .isInstanceOf(EntityNotFoundException.class)
-            .hasMessageContaining("User not found");
+        assertThatThrownBy { userService.findById(999L) }
+            .isInstanceOf(EntityNotFoundException::class.java)
+            .hasMessageContaining("User not found")
 
-        verify(userRepository).findById(999L);
-        verifyNoInteractions(userMapper);
+        verify { userRepository.findById(999L) }
     }
 
     @Test
     @DisplayName("Should create user successfully")
-    void shouldCreateUser() {
+    fun `create - valid request - saves and returns response`() {
         // Given
-        when(userMapper.toEntity(userRequest)).thenReturn(testUser);
-        when(userRepository.save(any(User.class))).thenReturn(testUser);
-        when(userMapper.toResponse(testUser)).thenReturn(userResponse);
+        every { userRepository.save(any()) } returns testUser
 
         // When
-        UserResponse result = userService.create(userRequest);
+        val result = userService.create(userRequest)
 
         // Then
-        assertThat(result).isNotNull();
-        assertThat(result.id()).isEqualTo(1L);
-        verify(userRepository).save(any(User.class));
+        assertThat(result.id).isEqualTo(1L)
+        verify { userRepository.save(any()) }
+    }
+
+    @Test
+    @DisplayName("Should not call save when email already exists")
+    fun `create - duplicate email - throws exception without saving`() {
+        // Given
+        every { userRepository.existsByEmail(userRequest.email) } returns true
+
+        // When / Then
+        assertThatThrownBy { userService.create(userRequest) }
+            .isInstanceOf(DuplicateResourceException::class.java)
+
+        verify(exactly = 0) { userRepository.save(any()) }  // verify not called
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"admin", "user", "moderator"})
+    @ValueSource(strings = ["admin", "user", "moderator"])
     @DisplayName("Should validate different user roles")
-    void shouldValidateUserRoles(String role) {
-        // Test with multiple roles
-        assertThat(role).isNotBlank();
+    fun `validateRole - valid roles - passes`(role: String) {
+        assertThat(role).isNotBlank
     }
 }
 ```
 
 ## Integration Testing with TestContainers
 
-```java
-package com.example.integration;
+```kotlin
+package pl.piomin.services.integration
 
-import com.example.application.dto.UserRequest;
-import com.example.application.dto.UserResponse;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.test.web.client.TestRestTemplate
+import org.springframework.http.HttpStatus
+import org.springframework.test.context.DynamicPropertyRegistry
+import org.springframework.test.context.DynamicPropertySource
+import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
 class UserIntegrationTest {
 
-    @Container
-    @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17-alpine")
-        .withDatabaseName("testdb")
-        .withUsername("test")
-        .withPassword("test");
+    companion object {
+        @Container
+        @JvmStatic
+        val postgres = PostgreSQLContainer<Nothing>("postgres:17-alpine")
+            .apply {
+                withDatabaseName("testdb")
+                withUsername("test")
+                withPassword("test")
+            }
 
-    @Autowired
-    private TestRestTemplate restTemplate;
-
-    @BeforeEach
-    void setUp() {
-        // Clean up database before each test
+        @JvmStatic
+        @DynamicPropertySource
+        fun configureProperties(registry: DynamicPropertyRegistry) {
+            registry.add("spring.datasource.url", postgres::getJdbcUrl)
+            registry.add("spring.datasource.username", postgres::getUsername)
+            registry.add("spring.datasource.password", postgres::getPassword)
+        }
     }
 
+    @Autowired
+    private lateinit var restTemplate: TestRestTemplate
+
     @Test
-    void shouldCreateAndRetrieveUser() {
-        // Create user
-        UserRequest request = new UserRequest("test@example.com", "testuser");
-        ResponseEntity<UserResponse> createResponse = restTemplate.postForEntity(
+    fun `createAndRetrieveUser - full round trip - succeeds`() {
+        // Create
+        val request = CreateUserRequest(email = "test@example.com", name = "Test User")
+        val createResponse = restTemplate.postForEntity(
             "/api/users",
             request,
-            UserResponse.class
-        );
+            UserResponse::class.java
+        )
+        assertThat(createResponse.statusCode).isEqualTo(HttpStatus.CREATED)
+        val userId = createResponse.body!!.id
 
-        assertThat(createResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(createResponse.getBody()).isNotNull();
-        Long userId = createResponse.getBody().id();
-
-        // Retrieve user
-        ResponseEntity<UserResponse> getResponse = restTemplate.getForEntity(
-            "/api/users/" + userId,
-            UserResponse.class
-        );
-
-        assertThat(getResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(getResponse.getBody().email()).isEqualTo("test@example.com");
+        // Retrieve
+        val getResponse = restTemplate.getForEntity(
+            "/api/users/$userId",
+            UserResponse::class.java
+        )
+        assertThat(getResponse.statusCode).isEqualTo(HttpStatus.OK)
+        assertThat(getResponse.body!!.email).isEqualTo("test@example.com")
     }
 }
 ```
 
 ## Repository Testing
 
-```java
-package com.example.domain.repository;
+```kotlin
+package pl.piomin.services.domain.repository
 
-import com.example.domain.model.User;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-
-import java.util.Optional;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import com.ninja_squad.springmockk.MockkBean
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase
+import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest
+import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager
+import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
 
 @DataJpaTest
 @Testcontainers
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 class UserRepositoryTest {
 
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+    companion object {
+        @Container
+        @JvmStatic
+        val postgres = PostgreSQLContainer<Nothing>("postgres:17-alpine")
+    }
 
     @Autowired
-    private TestEntityManager entityManager;
+    private lateinit var entityManager: TestEntityManager
 
     @Autowired
-    private UserRepository userRepository;
+    private lateinit var userRepository: UserRepository
 
     @Test
-    void shouldFindUserByEmail() {
+    fun `findByEmail - existing user - returns user`() {
         // Given
-        User user = User.builder()
-            .email("test@example.com")
-            .username("testuser")
-            .active(true)
-            .build();
-        entityManager.persistAndFlush(user);
+        val user = User(email = "test@example.com", name = "Test User")
+        entityManager.persistAndFlush(user)
 
         // When
-        Optional<User> found = userRepository.findByEmail("test@example.com");
+        val found = userRepository.findByEmail("test@example.com")
 
         // Then
-        assertThat(found).isPresent();
-        assertThat(found.get().getEmail()).isEqualTo("test@example.com");
+        assertThat(found).isPresent
+        assertThat(found.get().email).isEqualTo("test@example.com")
     }
 
     @Test
-    void shouldCountActiveUsers() {
-        // Given
-        User activeUser = User.builder()
-            .email("active@example.com")
-            .username("active")
-            .active(true)
-            .build();
-        User inactiveUser = User.builder()
-            .email("inactive@example.com")
-            .username("inactive")
-            .active(false)
-            .build();
-        entityManager.persist(activeUser);
-        entityManager.persist(inactiveUser);
-        entityManager.flush();
+    fun `countByActiveTrue - mixed users - counts only active`() {
+        entityManager.persist(User(email = "active@example.com", active = true))
+        entityManager.persist(User(email = "inactive@example.com", active = false))
+        entityManager.flush()
 
-        // When
-        long count = userRepository.countByActiveTrue();
-
-        // Then
-        assertThat(count).isEqualTo(1);
+        assertThat(userRepository.countByActiveTrue()).isEqualTo(1)
     }
 }
 ```
 
-## REST Controller Testing
+## REST Controller Testing (SpringMockK)
 
-```java
-package com.example.presentation.rest;
+```kotlin
+package pl.piomin.services.presentation.rest
 
-import com.example.application.dto.UserRequest;
-import com.example.application.dto.UserResponse;
-import com.example.application.service.UserService;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.http.MediaType;
-import org.springframework.security.test.context.support.WithMockUser;
-import org.springframework.test.web.servlet.MockMvc;
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.ninja_squad.springmockk.MockkBean
+import io.mockk.every
+import io.mockk.verify
+import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest
+import org.springframework.http.MediaType
+import org.springframework.security.test.context.support.WithMockUser
+import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.*
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
-
-@WebMvcTest(UserController.class)
+@WebMvcTest(UserController::class)
 class UserControllerTest {
 
     @Autowired
-    private MockMvc mockMvc;
+    private lateinit var mockMvc: MockMvc
 
     @Autowired
-    private ObjectMapper objectMapper;
+    private lateinit var objectMapper: ObjectMapper
 
-    @MockBean
-    private UserService userService;
+    @MockkBean  // SpringMockK — NOT @MockBean (Mockito)
+    private lateinit var userService: UserService
 
     @Test
     @WithMockUser
-    void shouldGetUserById() throws Exception {
-        // Given
-        UserResponse response = new UserResponse(1L, "test@example.com", "testuser");
-        when(userService.findById(1L)).thenReturn(response);
+    fun `getById - existing user - returns 200`() {
+        val response = UserResponse(id = 1L, email = "test@example.com", name = "Test")
+        every { userService.findById(1L) } returns response
 
-        // When / Then
         mockMvc.perform(get("/api/users/1"))
-            .andExpect(status().isOk())
+            .andExpect(status().isOk)
             .andExpect(jsonPath("$.id").value(1))
-            .andExpect(jsonPath("$.email").value("test@example.com"));
+            .andExpect(jsonPath("$.email").value("test@example.com"))
+
+        verify { userService.findById(1L) }
     }
 
     @Test
     @WithMockUser
-    void shouldCreateUser() throws Exception {
-        // Given
-        UserRequest request = new UserRequest("test@example.com", "testuser");
-        UserResponse response = new UserResponse(1L, "test@example.com", "testuser");
-        when(userService.create(any(UserRequest.class))).thenReturn(response);
+    fun `create - valid request - returns 201`() {
+        val request = CreateUserRequest(email = "test@example.com", name = "Test")
+        val response = UserResponse(id = 1L, email = "test@example.com", name = "Test")
+        every { userService.create(any()) } returns response
 
-        // When / Then
-        mockMvc.perform(post("/api/users")
-                .with(csrf())
+        mockMvc.perform(
+            post("/api/users")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.id").value(1));
+                .content(objectMapper.writeValueAsString(request))
+        )
+            .andExpect(status().isCreated)
+            .andExpect(jsonPath("$.id").value(1))
     }
 
     @Test
-    void shouldReturn401WhenNotAuthenticated() throws Exception {
+    fun `getById - unauthenticated - returns 401`() {
         mockMvc.perform(get("/api/users/1"))
-            .andExpect(status().isUnauthorized());
+            .andExpect(status().isUnauthorized)
     }
 }
 ```
 
-## Test Configuration
+## Test Data Builders (Kotlin Object)
 
-```java
-package com.example.config;
+```kotlin
+package pl.piomin.services.test
 
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
-import org.springframework.security.crypto.password.NoOpPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
+object UserTestFixtures {
+    fun aUser(
+        id: Long = 1L,
+        email: String = "test@example.com",
+        name: String = "Test User",
+        active: Boolean = true
+    ) = User(id = id, email = email, name = name, active = active)
 
-@TestConfiguration
-public class TestSecurityConfig {
-
-    @Bean
-    @Primary
-    public PasswordEncoder passwordEncoder() {
-        return NoOpPasswordEncoder.getInstance();
-    }
-}
-```
-
-## Test Data Builders
-
-```java
-package com.example.test.builders;
-
-import com.example.domain.model.User;
-
-public class UserTestBuilder {
-
-    private Long id = 1L;
-    private String email = "test@example.com";
-    private String username = "testuser";
-    private Boolean active = true;
-
-    public static UserTestBuilder aUser() {
-        return new UserTestBuilder();
-    }
-
-    public UserTestBuilder withId(Long id) {
-        this.id = id;
-        return this;
-    }
-
-    public UserTestBuilder withEmail(String email) {
-        this.email = email;
-        return this;
-    }
-
-    public UserTestBuilder inactive() {
-        this.active = false;
-        return this;
-    }
-
-    public User build() {
-        return User.builder()
-            .id(id)
-            .email(email)
-            .username(username)
-            .active(active)
-            .build();
-    }
+    fun aCreateUserRequest(
+        email: String = "test@example.com",
+        name: String = "Test User"
+    ) = CreateUserRequest(email = email, name = name)
 }
 
 // Usage
-User user = aUser()
-    .withEmail("custom@example.com")
-    .inactive()
-    .build();
+val user = UserTestFixtures.aUser(email = "custom@example.com")
+val inactive = UserTestFixtures.aUser(active = false)
 ```
 
-## Performance Testing with JMH
+## Coroutine Testing
 
-```java
-package com.example.benchmark;
+```kotlin
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.StandardTestDispatcher
 
-import org.openjdk.jmh.annotations.*;
-import org.openjdk.jmh.runner.Runner;
-import org.openjdk.jmh.runner.options.Options;
-import org.openjdk.jmh.runner.options.OptionsBuilder;
+@ExtendWith(MockKExtension::class)
+class UserCoroutineServiceTest {
 
-import java.util.concurrent.TimeUnit;
+    @MockK
+    lateinit var repository: UserRepository
 
-@BenchmarkMode(Mode.AverageTime)
-@OutputTimeUnit(TimeUnit.MICROSECONDS)
-@State(Scope.Benchmark)
-@Fork(value = 2, warmups = 1)
-@Warmup(iterations = 3)
-@Measurement(iterations = 5)
-public class UserServiceBenchmark {
+    @InjectMockKs
+    lateinit var service: UserCoroutineService
 
-    private UserService userService;
+    @Test
+    fun `findById - suspend - returns user`() = runTest {
+        coEvery { repository.findById(1L) } returns Optional.of(User(id = 1L))
 
-    @Setup
-    public void setup() {
-        // Initialize test data
-        userService = new UserService();
-    }
+        val result = service.findById(1L)
 
-    @Benchmark
-    public void benchmarkFindUser() {
-        userService.findById(1L);
-    }
-
-    public static void main(String[] args) throws Exception {
-        Options opt = new OptionsBuilder()
-            .include(UserServiceBenchmark.class.getSimpleName())
-            .build();
-        new Runner(opt).run();
-    }
-}
-```
-
-## Test Containers Shared Instance
-
-```java
-package com.example.test;
-
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-
-public abstract class AbstractIntegrationTest {
-
-    static final PostgreSQLContainer<?> postgres;
-
-    static {
-        postgres = new PostgreSQLContainer<>("postgres:16-alpine")
-            .withReuse(true);
-        postgres.start();
-    }
-
-    @DynamicPropertySource
-    static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
+        assertThat(result).isNotNull
+        coVerify { repository.findById(1L) }
     }
 }
 ```
 
 ## Quick Reference
 
-| Annotation | Purpose |
-|-----------|---------|
-| `@Test` | Mark test method |
-| `@BeforeEach` | Run before each test |
-| `@AfterEach` | Run after each test |
-| `@DisplayName` | Readable test name |
-| `@ParameterizedTest` | Data-driven tests |
-| `@ExtendWith` | Register extensions |
-| `@SpringBootTest` | Full application context |
-| `@WebMvcTest` | Test MVC layer only |
-| `@DataJpaTest` | Test repository layer |
-| `@MockBean` | Mock Spring bean |
-| `@WithMockUser` | Mock authenticated user |
+| Annotation / Function | Purpose |
+|----------------------|---------|
+| `@ExtendWith(MockKExtension::class)` | Enable MockK in JUnit 5 |
+| `@MockK` | Create mock |
+| `@InjectMockKs` | Inject mocks into subject under test |
+| `@MockkBean` | Mock Spring bean in `@WebMvcTest` / `@SpringBootTest` |
+| `every { } returns` | Stub method call |
+| `coEvery { } returns` | Stub suspend function |
+| `verify { }` | Verify interaction |
+| `coVerify { }` | Verify suspend interaction |
+| `confirmVerified()` | Assert no unexpected interactions |
+| `every { } throws` | Stub exception |
+| `runTest { }` | Run coroutine test |
+| `@WithMockUser` | Mock authenticated user for security tests |
 | `assertThat()` | AssertJ fluent assertions |
-| `verify()` | Mockito verification |

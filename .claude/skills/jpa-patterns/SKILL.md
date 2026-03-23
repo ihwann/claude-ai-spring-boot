@@ -1,11 +1,11 @@
 ---
 name: jpa-patterns
-description: JPA/Hibernate patterns and common pitfalls (N+1, lazy loading, transactions, queries). Use when user has JPA performance issues, LazyInitializationException, or asks about entity relationships and fetching strategies.
+description: JPA/Hibernate patterns and common pitfalls for Kotlin (N+1, lazy loading, transactions, queries, open class entities). Use when user has JPA performance issues, LazyInitializationException, or asks about entity relationships, fetching strategies, or Kotlin-specific JPA issues.
 ---
 
-# JPA Patterns Skill
+# JPA Patterns Skill (Kotlin)
 
-Best practices and common pitfalls for JPA/Hibernate in Spring applications.
+Best practices and common pitfalls for JPA/Hibernate in Kotlin/Spring applications.
 
 ## When to Use
 - User mentions "N+1 problem" / "too many queries"
@@ -14,6 +14,7 @@ Best practices and common pitfalls for JPA/Hibernate in Spring applications.
 - Transaction management issues
 - Entity relationship design
 - Query optimization
+- Kotlin-specific JPA issues (open class, @field:, data class)
 
 ---
 
@@ -22,10 +23,104 @@ Best practices and common pitfalls for JPA/Hibernate in Spring applications.
 | Problem | Symptom | Solution |
 |---------|---------|----------|
 | N+1 queries | Many SELECT statements | JOIN FETCH, @EntityGraph |
-| LazyInitializationException | Error outside transaction | Open Session in View, DTO projection, JOIN FETCH |
+| LazyInitializationException | Error outside transaction | JOIN FETCH, @Transactional, DTO projection |
 | Slow queries | Performance issues | Pagination, projections, indexes |
 | Dirty checking overhead | Slow updates | Read-only transactions, DTOs |
 | Lost updates | Concurrent modifications | Optimistic locking (@Version) |
+| Hibernate proxy error | ClassCastException | Use open class, not data class |
+| Validation ignored | No constraint violations triggered | Use @field: annotation target |
+
+---
+
+## Kotlin JPA Essentials
+
+> **Read this first before any other section**
+
+### ❌ data class for JPA entities — NEVER DO THIS
+
+```kotlin
+// ❌ WRONG: data class breaks Hibernate
+@Entity
+data class User(
+    @Id @GeneratedValue val id: Long = 0,
+    var email: String = ""
+)
+// Problems:
+// 1. Kotlin data classes are final — Hibernate can't create proxies
+// 2. auto-generated equals/hashCode uses all fields — breaks with detached entities
+// 3. copy() bypasses JPA lifecycle callbacks
+```
+
+### ✅ open class for JPA entities
+
+```kotlin
+// ✅ CORRECT: open class for Hibernate proxy support
+// (all-open Maven plugin with 'jpa' preset handles @Entity automatically)
+@Entity
+@Table(name = "users")
+open class User(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    open val id: Long = 0,
+
+    open var email: String = "",
+
+    open var active: Boolean = true
+) {
+    // Implement equals/hashCode using business key or id
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is User) return false
+        return id != 0L && id == other.id
+    }
+    override fun hashCode(): Int = id.hashCode()
+    override fun toString(): String = "User(id=$id, email=$email)"
+}
+```
+
+### @field: annotation target — REQUIRED for validation
+
+```kotlin
+// ❌ WRONG: validation annotation is on constructor parameter, not the field
+data class CreateUserRequest(
+    @NotBlank val email: String  // annotation target is parameter — validation IGNORED
+)
+
+// ✅ CORRECT: @field: target ensures annotation is placed on the backing field
+data class CreateUserRequest(
+    @field:NotBlank(message = "Email is required")
+    @field:Email(message = "Invalid email format")
+    val email: String,
+
+    @field:NotNull
+    @field:Min(18)
+    val age: Int
+)
+```
+
+### MutableList vs List for collections
+
+```kotlin
+@Entity
+open class Author(
+    @Id @GeneratedValue open val id: Long = 0,
+    open var name: String = "",
+
+    // Use MutableList for bidirectional associations (Hibernate modifies the collection)
+    @OneToMany(mappedBy = "author", cascade = [CascadeType.ALL], orphanRemoval = true)
+    open val books: MutableList<Book> = mutableListOf()
+) {
+    fun addBook(book: Book) {
+        books.add(book)
+        book.author = this
+    }
+
+    fun removeBook(book: Book) {
+        books.remove(book)
+        book.author = null
+    }
+}
+```
 
 ---
 
@@ -35,91 +130,73 @@ Best practices and common pitfalls for JPA/Hibernate in Spring applications.
 
 ### The Problem
 
-```java
+```kotlin
 // ❌ BAD: N+1 queries
-@Entity
-public class Author {
-    @Id private Long id;
-    private String name;
-
-    @OneToMany(mappedBy = "author", fetch = FetchType.LAZY)
-    private List<Book> books;
+val authors = authorRepository.findAll()  // 1 query
+for (author in authors) {
+    println(author.books.size)  // N queries! (books is LAZY)
 }
-
-// This innocent code...
-List<Author> authors = authorRepository.findAll();  // 1 query
-for (Author author : authors) {
-    System.out.println(author.getBooks().size());   // N queries!
-}
-// Result: 1 + N queries (if 100 authors = 101 queries)
+// 100 authors = 101 queries
 ```
 
 ### Solution 1: JOIN FETCH (JPQL)
 
-```java
+```kotlin
 // ✅ GOOD: Single query with JOIN FETCH
-public interface AuthorRepository extends JpaRepository<Author, Long> {
+interface AuthorRepository : JpaRepository<Author, Long> {
 
     @Query("SELECT a FROM Author a JOIN FETCH a.books")
-    List<Author> findAllWithBooks();
+    fun findAllWithBooks(): List<Author>
 }
-
-// Usage - single query
-List<Author> authors = authorRepository.findAllWithBooks();
 ```
 
 ### Solution 2: @EntityGraph
 
-```java
+```kotlin
 // ✅ GOOD: EntityGraph for declarative fetching
-public interface AuthorRepository extends JpaRepository<Author, Long> {
+interface AuthorRepository : JpaRepository<Author, Long> {
 
-    @EntityGraph(attributePaths = {"books"})
-    List<Author> findAll();
+    @EntityGraph(attributePaths = ["books"])
+    override fun findAll(): List<Author>
 
-    // Or with named graph
+    // Or with named graph defined on entity
     @EntityGraph(value = "Author.withBooks")
-    List<Author> findAllWithBooks();
+    fun findAllWithBooks(): List<Author>
 }
 
-// Define named graph on entity
+// Named graph on entity
 @Entity
 @NamedEntityGraph(
     name = "Author.withBooks",
-    attributeNodes = @NamedAttributeNode("books")
+    attributeNodes = [NamedAttributeNode("books")]
 )
-public class Author {
-    // ...
-}
+open class Author(...)
 ```
 
 ### Solution 3: Batch Fetching
 
-```java
-// ✅ GOOD: Batch fetching (Hibernate-specific)
+```kotlin
+// ✅ GOOD: Hibernate batch fetching
 @Entity
-public class Author {
-
+open class Author(
     @OneToMany(mappedBy = "author")
-    @BatchSize(size = 25)  // Fetch 25 at a time
-    private List<Book> books;
-}
+    @BatchSize(size = 25)
+    open val books: MutableList<Book> = mutableListOf()
+)
 
-// Or globally in application.properties
-spring.jpa.properties.hibernate.default_batch_fetch_size=25
+// Or globally in application.yml
+// spring.jpa.properties.hibernate.default_batch_fetch_size=25
 ```
 
 ### Detecting N+1
 
 ```yaml
-# Enable SQL logging to detect N+1
 spring:
   jpa:
     show-sql: true
     properties:
       hibernate:
         format_sql: true
-
 logging:
   level:
     org.hibernate.SQL: DEBUG
@@ -130,204 +207,98 @@ logging:
 
 ## Lazy Loading
 
-### FetchType Basics
-
-```java
-@Entity
-public class Order {
-
-    // LAZY: Load only when accessed (default for collections)
-    @OneToMany(mappedBy = "order", fetch = FetchType.LAZY)
-    private List<OrderItem> items;
-
-    // EAGER: Always load immediately (default for @ManyToOne, @OneToOne)
-    @ManyToOne(fetch = FetchType.EAGER)  // ⚠️ Usually bad
-    private Customer customer;
-}
-```
-
 ### Best Practice: Default to LAZY
 
-```java
-// ✅ GOOD: Always use LAZY, fetch when needed
+```kotlin
 @Entity
-public class Order {
+open class Order(
+    // ✅ LAZY for @ManyToOne — override the EAGER default
+    @ManyToOne(fetch = FetchType.LAZY)
+    open var customer: Customer? = null,
 
-    @ManyToOne(fetch = FetchType.LAZY)  // Override EAGER default
-    private Customer customer;
-
+    // LAZY is default for @OneToMany
     @OneToMany(mappedBy = "order", fetch = FetchType.LAZY)
-    private List<OrderItem> items;
-}
+    open val items: MutableList<OrderItem> = mutableListOf()
+)
 ```
 
-### LazyInitializationException
-
-```java
-// ❌ BAD: Accessing lazy field outside transaction
-@Service
-public class OrderService {
-
-    public Order getOrder(Long id) {
-        return orderRepository.findById(id).orElseThrow();
-    }
-}
-
-// In controller (no transaction)
-Order order = orderService.getOrder(1L);
-order.getItems().size();  // 💥 LazyInitializationException!
-```
-
-### Solutions for LazyInitializationException
+### LazyInitializationException Solutions
 
 **Solution 1: JOIN FETCH in query**
-```java
-// ✅ Fetch needed associations in query
+```kotlin
 @Query("SELECT o FROM Order o JOIN FETCH o.items WHERE o.id = :id")
-Optional<Order> findByIdWithItems(@Param("id") Long id);
+fun findByIdWithItems(@Param("id") id: Long): Optional<Order>
 ```
 
 **Solution 2: @Transactional on service method**
-```java
-// ✅ Keep transaction open while accessing
+```kotlin
 @Service
-public class OrderService {
+class OrderService(private val orderRepository: OrderRepository) {
 
     @Transactional(readOnly = true)
-    public OrderDTO getOrderWithItems(Long id) {
-        Order order = orderRepository.findById(id).orElseThrow();
-        // Access within transaction
-        int itemCount = order.getItems().size();
-        return new OrderDTO(order, itemCount);
+    fun getOrderWithItems(id: Long): OrderDto {
+        val order = orderRepository.findById(id).orElseThrow()
+        val itemCount = order.items.size  // safe — within transaction
+        return OrderDto(order.id, itemCount)
     }
 }
 ```
 
 **Solution 3: DTO Projection (recommended)**
-```java
-// ✅ BEST: Return only what you need
-public interface OrderSummary {
-    Long getId();
-    String getStatus();
-    int getItemCount();
+```kotlin
+// Interface projection
+interface OrderSummary {
+    val id: Long
+    val status: String
+    val itemCount: Int
 }
 
-@Query("SELECT o.id as id, o.status as status, SIZE(o.items) as itemCount " +
-       "FROM Order o WHERE o.id = :id")
-Optional<OrderSummary> findOrderSummary(@Param("id") Long id);
-```
-
-**Solution 4: Open Session in View (not recommended)**
-```yaml
-# Keeps session open during view rendering
-# ⚠️ Can mask N+1 problems, use with caution
-spring:
-  jpa:
-    open-in-view: true  # Default is true
+@Query("SELECT o.id as id, o.status as status, SIZE(o.items) as itemCount FROM Order o WHERE o.id = :id")
+fun findOrderSummary(@Param("id") id: Long): Optional<OrderSummary>
 ```
 
 ---
 
 ## Transactions
 
-### Basic Transaction Management
-
-```java
+```kotlin
 @Service
-public class OrderService {
+@Transactional(readOnly = true)  // Default read-only for all methods
+class OrderService(private val orderRepository: OrderRepository) {
 
-    // Read-only: Optimized, no dirty checking
-    @Transactional(readOnly = true)
-    public Order findById(Long id) {
-        return orderRepository.findById(id).orElseThrow();
-    }
+    fun findById(id: Long): Order =
+        orderRepository.findById(id).orElseThrow { EntityNotFoundException("Order $id not found") }
 
-    // Write: Full transaction with dirty checking
-    @Transactional
-    public Order createOrder(CreateOrderRequest request) {
-        Order order = new Order();
-        // ... set properties
-        return orderRepository.save(order);
-    }
+    @Transactional  // Write transaction
+    fun create(request: CreateOrderRequest): Order =
+        orderRepository.save(Order(customerId = request.customerId))
 
-    // Explicit rollback
-    @Transactional(rollbackFor = Exception.class)
-    public void processPayment(Long orderId) throws PaymentException {
-        // Rolls back on any exception, not just RuntimeException
+    @Transactional(rollbackFor = [Exception::class])
+    fun processPayment(orderId: Long) {
+        // Rolls back on any exception
     }
 }
 ```
 
 ### Transaction Propagation
 
-```java
+```kotlin
 @Service
-public class OrderService {
-
-    @Autowired
-    private PaymentService paymentService;
-
+class OrderService(
+    private val orderRepository: OrderRepository,
+    private val paymentService: PaymentService
+) {
     @Transactional
-    public void placeOrder(Order order) {
-        orderRepository.save(order);
-
-        // REQUIRED (default): Uses existing or creates new
-        paymentService.processPayment(order);
-
-        // If paymentService throws, entire order is rolled back
+    fun placeOrder(order: Order) {
+        orderRepository.save(order)
+        paymentService.processPayment(order)  // REQUIRED: uses existing transaction
     }
 }
 
 @Service
-public class PaymentService {
-
-    // REQUIRES_NEW: Always creates new transaction
-    // If this fails, order can still be saved
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void processPayment(Order order) {
-        // Independent transaction
-    }
-
-    // MANDATORY: Must run within existing transaction
-    @Transactional(propagation = Propagation.MANDATORY)
-    public void updatePaymentStatus(Order order) {
-        // Throws if no transaction exists
-    }
-}
-```
-
-### Common Transaction Mistakes
-
-```java
-// ❌ BAD: Calling @Transactional method from same class
-@Service
-public class OrderService {
-
-    public void processOrder(Long id) {
-        updateOrder(id);  // @Transactional is IGNORED!
-    }
-
-    @Transactional
-    public void updateOrder(Long id) {
-        // Transaction not started because called internally
-    }
-}
-
-// ✅ GOOD: Inject self or use separate service
-@Service
-public class OrderService {
-
-    @Autowired
-    private OrderService self;  // Or use separate service
-
-    public void processOrder(Long id) {
-        self.updateOrder(id);  // Now transaction works
-    }
-
-    @Transactional
-    public void updateOrder(Long id) {
-        // Transaction properly started
-    }
+class PaymentService {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)  // Always new transaction
+    fun processPayment(order: Order) { /* independent */ }
 }
 ```
 
@@ -337,101 +308,49 @@ public class OrderService {
 
 ### OneToMany / ManyToOne
 
-```java
-// ✅ GOOD: Bidirectional with proper mapping
+```kotlin
 @Entity
-public class Author {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+open class Author(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) open val id: Long = 0,
+    open var name: String = "",
 
-    @OneToMany(mappedBy = "author", cascade = CascadeType.ALL, orphanRemoval = true)
-    private List<Book> books = new ArrayList<>();
-
-    // Helper methods for bidirectional sync
-    public void addBook(Book book) {
-        books.add(book);
-        book.setAuthor(this);
-    }
-
-    public void removeBook(Book book) {
-        books.remove(book);
-        book.setAuthor(null);
-    }
+    @OneToMany(mappedBy = "author", cascade = [CascadeType.ALL], orphanRemoval = true)
+    open val books: MutableList<Book> = mutableListOf()
+) {
+    fun addBook(book: Book) { books.add(book); book.author = this }
+    fun removeBook(book: Book) { books.remove(book); book.author = null }
 }
 
 @Entity
-public class Book {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+open class Book(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) open val id: Long = 0,
+    open var title: String = "",
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "author_id")
-    private Author author;
-}
+    open var author: Author? = null
+)
 ```
 
-### ManyToMany
+### equals/hashCode for JPA Entities
 
-```java
-// ✅ GOOD: ManyToMany with Set (not List) to avoid duplicates
+```kotlin
+// ✅ Business-key based equals/hashCode
 @Entity
-public class Student {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+open class Book(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) open val id: Long = 0,
 
-    @ManyToMany(cascade = {CascadeType.PERSIST, CascadeType.MERGE})
-    @JoinTable(
-        name = "student_course",
-        joinColumns = @JoinColumn(name = "student_id"),
-        inverseJoinColumns = @JoinColumn(name = "course_id")
-    )
-    private Set<Course> courses = new HashSet<>();
-
-    public void addCourse(Course course) {
-        courses.add(course);
-        course.getStudents().add(this);
-    }
-
-    public void removeCourse(Course course) {
-        courses.remove(course);
-        course.getStudents().remove(this);
-    }
-}
-
-@Entity
-public class Course {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @ManyToMany(mappedBy = "courses")
-    private Set<Student> students = new HashSet<>();
-}
-```
-
-### equals() and hashCode() for Entities
-
-```java
-// ✅ GOOD: Use business key or ID carefully
-@Entity
-public class Book {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @NaturalId  // Hibernate annotation for business key
+    @NaturalId
     @Column(unique = true, nullable = false)
-    private String isbn;
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof Book book)) return false;
-        return isbn != null && isbn.equals(book.isbn);
+    open var isbn: String = ""
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is Book) return false
+        return isbn == other.isbn
     }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(isbn);  // Use business key, not ID
-    }
+    override fun hashCode(): Int = isbn.hashCode()
+    override fun toString(): String = "Book(isbn=$isbn)"  // Never include lazy fields!
 }
 ```
 
@@ -441,79 +360,38 @@ public class Book {
 
 ### Pagination
 
-```java
-// ✅ GOOD: Always paginate large result sets
-public interface OrderRepository extends JpaRepository<Order, Long> {
-
-    Page<Order> findByStatus(OrderStatus status, Pageable pageable);
-
-    // With sorting
-    @Query("SELECT o FROM Order o WHERE o.status = :status")
-    Page<Order> findByStatusSorted(
-        @Param("status") OrderStatus status,
-        Pageable pageable
-    );
+```kotlin
+interface OrderRepository : JpaRepository<Order, Long> {
+    fun findByStatus(status: OrderStatus, pageable: Pageable): Page<Order>
 }
 
 // Usage
-Pageable pageable = PageRequest.of(0, 20, Sort.by("createdAt").descending());
-Page<Order> orders = orderRepository.findByStatus(OrderStatus.PENDING, pageable);
+val pageable = PageRequest.of(0, 20, Sort.by("createdAt").descending())
+val orders = orderRepository.findByStatus(OrderStatus.PENDING, pageable)
 ```
 
 ### DTO Projections
 
-```java
-// ✅ GOOD: Fetch only needed columns
+```kotlin
+// Class-based projection (data class)
+data class OrderSummary(val id: Long, val customerName: String, val total: BigDecimal)
 
-// Interface-based projection
-public interface OrderSummary {
-    Long getId();
-    String getCustomerName();
-    BigDecimal getTotal();
-}
-
-@Query("SELECT o.id as id, o.customer.name as customerName, o.total as total " +
-       "FROM Order o WHERE o.status = :status")
-List<OrderSummary> findOrderSummaries(@Param("status") OrderStatus status);
-
-// Class-based projection (DTO)
-public record OrderDTO(Long id, String customerName, BigDecimal total) {}
-
-@Query("SELECT new com.example.dto.OrderDTO(o.id, o.customer.name, o.total) " +
-       "FROM Order o WHERE o.status = :status")
-List<OrderDTO> findOrderDTOs(@Param("status") OrderStatus status);
+@Query("SELECT new pl.piomin.services.dto.OrderSummary(o.id, o.customer.name, o.total) FROM Order o WHERE o.status = :status")
+fun findOrderSummaries(@Param("status") status: OrderStatus): List<OrderSummary>
 ```
 
 ### Bulk Operations
 
-```java
-// ✅ GOOD: Bulk update instead of loading entities
-public interface OrderRepository extends JpaRepository<Order, Long> {
+```kotlin
+interface OrderRepository : JpaRepository<Order, Long> {
 
     @Modifying
     @Query("UPDATE Order o SET o.status = :status WHERE o.createdAt < :date")
-    int updateOldOrdersStatus(
-        @Param("status") OrderStatus status,
-        @Param("date") LocalDateTime date
-    );
+    fun updateOldOrdersStatus(@Param("status") status: OrderStatus, @Param("date") date: LocalDateTime): Int
 
     @Modifying
     @Query("DELETE FROM Order o WHERE o.status = :status AND o.createdAt < :date")
-    int deleteOldOrders(
-        @Param("status") OrderStatus status,
-        @Param("date") LocalDateTime date
-    );
-}
-
-// Usage
-@Transactional
-public void archiveOldOrders() {
-    LocalDateTime threshold = LocalDateTime.now().minusYears(1);
-    int updated = orderRepository.updateOldOrdersStatus(
-        OrderStatus.ARCHIVED,
-        threshold
-    );
-    log.info("Archived {} orders", updated);
+    fun deleteOldOrders(@Param("status") status: OrderStatus, @Param("date") date: LocalDateTime): Int
 }
 ```
 
@@ -521,114 +399,31 @@ public void archiveOldOrders() {
 
 ## Optimistic Locking
 
-### Prevent Lost Updates
-
-```java
-// ✅ GOOD: Use @Version for optimistic locking
+```kotlin
 @Entity
-public class Order {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+open class Order(
+    @Id @GeneratedValue open val id: Long = 0,
 
     @Version
-    private Long version;
+    open var version: Long = 0,  // Hibernate manages this automatically
 
-    private OrderStatus status;
-    private BigDecimal total;
-}
+    open var status: OrderStatus = OrderStatus.PENDING
+)
 
-// When two users update same order:
-// User 1: loads order (version=1), modifies, saves → version becomes 2
-// User 2: loads order (version=1), modifies, saves → OptimisticLockException!
-```
-
-### Handling OptimisticLockException
-
-```java
+// Handle concurrent modification
 @Service
-public class OrderService {
+class OrderService(private val orderRepository: OrderRepository) {
 
     @Transactional
-    public Order updateOrder(Long id, UpdateOrderRequest request) {
-        try {
-            Order order = orderRepository.findById(id).orElseThrow();
-            order.setStatus(request.getStatus());
-            return orderRepository.save(order);
-        } catch (OptimisticLockException e) {
-            throw new ConcurrentModificationException(
-                "Order was modified by another user. Please refresh and try again."
-            );
+    fun updateOrder(id: Long, request: UpdateOrderRequest): Order {
+        return try {
+            val order = orderRepository.findById(id).orElseThrow()
+            order.status = request.status
+            orderRepository.save(order)
+        } catch (e: OptimisticLockException) {
+            throw ConcurrentModificationException("Order was modified concurrently. Please retry.")
         }
     }
-
-    // Or with retry
-    @Retryable(value = OptimisticLockException.class, maxAttempts = 3)
-    @Transactional
-    public Order updateOrderWithRetry(Long id, UpdateOrderRequest request) {
-        Order order = orderRepository.findById(id).orElseThrow();
-        order.setStatus(request.getStatus());
-        return orderRepository.save(order);
-    }
-}
-```
-
----
-
-## Common Mistakes
-
-### 1. Cascade Misuse
-
-```java
-// ❌ BAD: CascadeType.ALL on @ManyToOne
-@Entity
-public class Book {
-    @ManyToOne(cascade = CascadeType.ALL)  // Dangerous!
-    private Author author;
-}
-// Deleting a book could delete the author!
-
-// ✅ GOOD: Cascade only from parent to child
-@Entity
-public class Author {
-    @OneToMany(mappedBy = "author", cascade = CascadeType.ALL, orphanRemoval = true)
-    private List<Book> books;
-}
-```
-
-### 2. Missing Index
-
-```java
-// ❌ BAD: Frequent queries on non-indexed column
-@Query("SELECT o FROM Order o WHERE o.customerEmail = :email")
-List<Order> findByCustomerEmail(@Param("email") String email);
-
-// ✅ GOOD: Add index
-@Entity
-@Table(indexes = @Index(name = "idx_order_customer_email", columnList = "customerEmail"))
-public class Order {
-    private String customerEmail;
-}
-```
-
-### 3. toString() with Lazy Fields
-
-```java
-// ❌ BAD: toString includes lazy collection
-@Entity
-public class Author {
-    @OneToMany(mappedBy = "author", fetch = FetchType.LAZY)
-    private List<Book> books;
-
-    @Override
-    public String toString() {
-        return "Author{id=" + id + ", books=" + books + "}";  // Triggers lazy load!
-    }
-}
-
-// ✅ GOOD: Exclude lazy fields from toString
-@Override
-public String toString() {
-    return "Author{id=" + id + ", name='" + name + "'}";
 }
 ```
 
@@ -636,8 +431,8 @@ public String toString() {
 
 ## Performance Checklist
 
-When reviewing JPA code, check:
-
+- [ ] No `data class` for JPA entities — use `open class`
+- [ ] `@field:` target on all validation annotations in data class DTOs
 - [ ] No N+1 queries (use JOIN FETCH or @EntityGraph)
 - [ ] LAZY fetch by default (especially @ManyToOne)
 - [ ] Pagination for large result sets
@@ -646,12 +441,13 @@ When reviewing JPA code, check:
 - [ ] @Version for entities with concurrent access
 - [ ] Indexes on frequently queried columns
 - [ ] No lazy fields in toString()
-- [ ] Read-only transactions where applicable
+- [ ] Read-only transactions (`@Transactional(readOnly = true)`) where applicable
+- [ ] `open-in-view: false` in application.yml
 
 ---
 
 ## Related Skills
 
-- `spring-boot-patterns` - Spring Boot controller/service patterns
-- `java-code-review` - General code review checklist
+- `spring-boot-patterns` - Kotlin Spring Boot controller/service patterns
+- `java-code-review` - Kotlin code review checklist
 - `clean-code` - Code quality principles
